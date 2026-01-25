@@ -44,6 +44,20 @@ class NotifyChannel(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class Account(Base):
+    """交易账户"""
+    __tablename__ = "accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)  # 账户名称，如 "招商证券"、"华泰证券"
+    available_funds = Column(Float, default=0)  # 可用资金
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    positions = relationship("Position", back_populates="account", cascade="all, delete-orphan")
+
+
 class Stock(Base):
     __tablename__ = "stocks"
 
@@ -51,13 +65,34 @@ class Stock(Base):
     symbol = Column(String, nullable=False)
     name = Column(String, nullable=False)
     market = Column(String, nullable=False)  # CN / HK / US
+    # 以下字段已废弃，持仓信息移至 Position 表
     cost_price = Column(Float, nullable=True)
     quantity = Column(Integer, nullable=True)
+    invested_amount = Column(Float, nullable=True)
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     agents = relationship("StockAgent", back_populates="stock", cascade="all, delete-orphan")
+    positions = relationship("Position", back_populates="stock", cascade="all, delete-orphan")
+
+
+class Position(Base):
+    """持仓记录（多账户多股票）"""
+    __tablename__ = "positions"
+    __table_args__ = (UniqueConstraint("account_id", "stock_id", name="uq_account_stock"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    account_id = Column(Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False)
+    stock_id = Column(Integer, ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False)
+    cost_price = Column(Float, nullable=False)  # 成本价
+    quantity = Column(Integer, nullable=False)  # 持仓数量
+    invested_amount = Column(Float, nullable=True)  # 投入资金（用于盘中监控）
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    account = relationship("Account", back_populates="positions")
+    stock = relationship("Stock", back_populates="positions")
 
 
 class StockAgent(Base):
@@ -122,3 +157,33 @@ class AppSettings(Base):
     key = Column(String, unique=True, nullable=False)
     value = Column(String, default="")
     description = Column(String, default="")
+
+
+class DataSource(Base):
+    """数据源配置（新闻、K线图、行情）"""
+    __tablename__ = "data_sources"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)       # "财联社电报"
+    type = Column(String, nullable=False)       # "news" / "chart" / "quote"
+    provider = Column(String, nullable=False)   # "cls" / "eastmoney" / "tencent"
+    config = Column(JSON, default={})           # 配置参数
+    enabled = Column(Boolean, default=True)
+    priority = Column(Integer, default=0)       # 越小优先级越高
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class NewsCache(Base):
+    """新闻缓存（用于去重）"""
+    __tablename__ = "news_cache"
+    __table_args__ = (UniqueConstraint("source", "external_id", name="uq_news_source_external"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String, nullable=False)      # "cls" / "eastmoney"
+    external_id = Column(String, nullable=False) # 来源侧 ID
+    title = Column(String, nullable=False)
+    content = Column(String, default="")
+    publish_time = Column(DateTime, nullable=False)
+    symbols = Column(JSON, default=[])           # 关联股票代码列表
+    importance = Column(Integer, default=0)      # 0-3 重要性
+    created_at = Column(DateTime, server_default=func.now())

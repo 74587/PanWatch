@@ -1,14 +1,16 @@
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom'
-import { Moon, Sun, TrendingUp, Bot, ScrollText, Settings, List } from 'lucide-react'
+import { Moon, Sun, TrendingUp, Bot, ScrollText, Settings, List, Database } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
 import StocksPage from '@/pages/Stocks'
 import AgentsPage from '@/pages/Agents'
 import SettingsPage from '@/pages/Settings'
 import LogsPage from '@/pages/Logs'
+import DataSourcesPage from '@/pages/DataSources'
 
 const navItems = [
   { to: '/', icon: List, label: '自选股' },
   { to: '/agents', icon: Bot, label: 'Agent' },
+  { to: '/datasources', icon: Database, label: '数据源' },
   { to: '/logs', icon: ScrollText, label: '日志' },
   { to: '/settings', icon: Settings, label: '设置' },
 ]
@@ -70,6 +72,7 @@ function App() {
         <Routes>
           <Route path="/" element={<StocksPage />} />
           <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/datasources" element={<DataSourcesPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

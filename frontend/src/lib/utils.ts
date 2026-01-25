@@ -53,3 +53,13 @@ export interface NotifyChannel {
   enabled: boolean
   is_default: boolean
 }
+
+export interface DataSource {
+  id: number
+  name: string
+  type: string       // news / chart / quote
+  provider: string   // cls / eastmoney / tencent
+  config: Record<string, unknown>
+  enabled: boolean
+  priority: number
+}

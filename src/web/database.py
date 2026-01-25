@@ -30,6 +30,7 @@ def init_db():
     _migrate(engine)
     _migrate_old_providers(engine)
     _migrate_settings_to_models(engine)
+    _migrate_positions_to_accounts(engine)
 
 
 def _has_column(conn, table: str, column: str) -> bool:
@@ -56,6 +57,8 @@ def _migrate(engine):
         ("agent_configs", "notify_channel_ids", "ALTER TABLE agent_configs ADD COLUMN notify_channel_ids TEXT DEFAULT '[]'"),
         ("stock_agents", "ai_model_id", "ALTER TABLE stock_agents ADD COLUMN ai_model_id INTEGER REFERENCES ai_models(id) ON DELETE SET NULL"),
         ("stock_agents", "notify_channel_ids", "ALTER TABLE stock_agents ADD COLUMN notify_channel_ids TEXT DEFAULT '[]'"),
+        # Phase 3: 持仓增强
+        ("stocks", "invested_amount", "ALTER TABLE stocks ADD COLUMN invested_amount REAL"),
     ]
     with engine.connect() as conn:
         for table, column, sql in migrations:
@@ -160,3 +163,68 @@ def _migrate_settings_to_models(engine):
                 conn.execute(text("DELETE FROM app_settings WHERE key = :key"), {"key": key})
 
         conn.commit()
+
+
+def _migrate_positions_to_accounts(engine):
+    """
+    将旧的 stocks 表中的持仓数据迁移到 accounts + positions 表
+    创建一个默认账户，并将有持仓的股票数据迁移过去
+    """
+    with engine.connect() as conn:
+        # 检查是否已有账户数据（避免重复迁移）
+        if not _has_table(conn, "accounts"):
+            return
+
+        existing_accounts = conn.execute(text("SELECT COUNT(*) FROM accounts")).scalar()
+        if existing_accounts > 0:
+            return
+
+        # 检查 stocks 表是否有持仓数据需要迁移
+        if not _has_column(conn, "stocks", "cost_price"):
+            return
+
+        stocks_with_position = conn.execute(text(
+            "SELECT id, cost_price, quantity, invested_amount FROM stocks "
+            "WHERE cost_price IS NOT NULL AND quantity IS NOT NULL"
+        )).fetchall()
+
+        if not stocks_with_position:
+            # 没有持仓数据，创建一个空的默认账户
+            conn.execute(text(
+                "INSERT INTO accounts (name, available_funds, enabled) VALUES ('默认账户', 0, 1)"
+            ))
+            conn.commit()
+            logger.info("已创建默认账户")
+            return
+
+        # 创建默认账户
+        # 先获取旧的 available_funds 设置
+        old_funds = conn.execute(text(
+            "SELECT value FROM app_settings WHERE key = 'available_funds'"
+        )).scalar()
+        available_funds = float(old_funds) if old_funds else 0
+
+        conn.execute(text(
+            "INSERT INTO accounts (name, available_funds, enabled) VALUES (:name, :funds, 1)"
+        ), {"name": "默认账户", "funds": available_funds})
+        account_id = conn.execute(text("SELECT last_insert_rowid()")).scalar()
+
+        # 迁移持仓数据
+        for row in stocks_with_position:
+            stock_id, cost_price, quantity, invested_amount = row
+            conn.execute(text(
+                "INSERT INTO positions (account_id, stock_id, cost_price, quantity, invested_amount) "
+                "VALUES (:account_id, :stock_id, :cost_price, :quantity, :invested_amount)"
+            ), {
+                "account_id": account_id,
+                "stock_id": stock_id,
+                "cost_price": cost_price,
+                "quantity": quantity,
+                "invested_amount": invested_amount,
+            })
+
+        # 删除旧的 available_funds 设置
+        conn.execute(text("DELETE FROM app_settings WHERE key = 'available_funds'"))
+
+        conn.commit()
+        logger.info(f"已迁移 {len(stocks_with_position)} 条持仓数据到默认账户")

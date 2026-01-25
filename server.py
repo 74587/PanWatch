@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 
 from src.web.database import init_db, SessionLocal
-from src.web.models import AgentConfig, Stock, StockAgent, AIService, AIModel, NotifyChannel, AppSettings
+from src.web.models import AgentConfig, Stock, StockAgent, AIService, AIModel, NotifyChannel, AppSettings, DataSource
 from src.web.log_handler import DBLogHandler
 from src.config import Settings, AppConfig, StockConfig
 from src.models.market import MarketCode
@@ -15,6 +15,8 @@ from src.core.notifier import NotifierManager
 from src.core.scheduler import AgentScheduler
 from src.agents.base import AgentContext
 from src.agents.daily_report import DailyReportAgent
+from src.agents.news_digest import NewsDigestAgent
+from src.agents.chart_analyst import ChartAnalystAgent
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +93,7 @@ def seed_agents():
             "display_name": "新闻速递",
             "description": "定时抓取与持仓相关的新闻资讯并推送摘要",
             "enabled": False,
-            "schedule": "0 */2 9-18 * * 1-5",
+            "schedule": "0 9-18/2 * * 1-5",
         },
         {
             "name": "morning_brief",
@@ -99,6 +101,13 @@ def seed_agents():
             "description": "每日开盘前分析隔夜外盘和新闻，给出今日关注点",
             "enabled": False,
             "schedule": "0 9 * * 1-5",
+        },
+        {
+            "name": "chart_analyst",
+            "display_name": "技术分析",
+            "description": "截取 K 线图并使用多模态 AI 进行技术分析",
+            "enabled": False,
+            "schedule": "0 15 * * 1-5",
         },
     ]
 
@@ -109,6 +118,71 @@ def seed_agents():
 
     db.commit()
     db.close()
+
+
+def seed_data_sources():
+    """初始化预置数据源"""
+    db = SessionLocal()
+    sources = [
+        {
+            "name": "新浪财经快讯",
+            "type": "news",
+            "provider": "sina",
+            "config": {"page_size": 50},
+            "enabled": True,
+            "priority": 0,
+        },
+        {
+            "name": "东方财富公告",
+            "type": "news",
+            "provider": "eastmoney",
+            "config": {},
+            "enabled": True,
+            "priority": 1,
+        },
+        {
+            "name": "雪球K线",
+            "type": "chart",
+            "provider": "xueqiu",
+            "config": {
+                "viewport": {"width": 1280, "height": 900},
+                "extra_wait_ms": 3000,
+            },
+            "enabled": True,
+            "priority": 0,
+        },
+        {
+            "name": "东方财富K线",
+            "type": "chart",
+            "provider": "eastmoney",
+            "config": {
+                "viewport": {"width": 1280, "height": 900},
+                "extra_wait_ms": 2000,
+            },
+            "enabled": False,
+            "priority": 1,
+        },
+        {
+            "name": "腾讯行情",
+            "type": "quote",
+            "provider": "tencent",
+            "config": {},
+            "enabled": True,
+            "priority": 0,
+        },
+    ]
+
+    for source_data in sources:
+        existing = db.query(DataSource).filter(
+            DataSource.name == source_data["name"],
+            DataSource.provider == source_data["provider"],
+        ).first()
+        if not existing:
+            db.add(DataSource(**source_data))
+
+    db.commit()
+    db.close()
+    logger.info("预置数据源初始化完成")
 
 
 def load_watchlist_for_agent(agent_name: str) -> list[StockConfig]:
@@ -280,6 +354,8 @@ def build_context(agent_name: str, stock_agent_id: int | None = None) -> AgentCo
 # Agent 注册表
 AGENT_REGISTRY: dict[str, type] = {
     "daily_report": DailyReportAgent,
+    "news_digest": NewsDigestAgent,
+    "chart_analyst": ChartAnalystAgent,
 }
 
 
@@ -380,6 +456,7 @@ async def lifespan(app):
     setup_logging()
     setup_ssl()
     seed_agents()
+    seed_data_sources()
 
     global scheduler
     scheduler = build_scheduler()

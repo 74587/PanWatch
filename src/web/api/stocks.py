@@ -18,14 +18,10 @@ class StockCreate(BaseModel):
     symbol: str
     name: str
     market: str = "CN"
-    cost_price: float | None = None
-    quantity: int | None = None
 
 
 class StockUpdate(BaseModel):
     name: str | None = None
-    cost_price: float | None = None
-    quantity: int | None = None
     enabled: bool | None = None
 
 
@@ -41,8 +37,6 @@ class StockResponse(BaseModel):
     symbol: str
     name: str
     market: str
-    cost_price: float | None
-    quantity: int | None
     enabled: bool
     agents: list[StockAgentInfo] = []
 
@@ -67,8 +61,6 @@ def _stock_to_response(stock: Stock) -> dict:
         "symbol": stock.symbol,
         "name": stock.name,
         "market": stock.market,
-        "cost_price": stock.cost_price,
-        "quantity": stock.quantity,
         "enabled": stock.enabled,
         "agents": [
             {

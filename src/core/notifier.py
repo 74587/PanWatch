@@ -1,9 +1,42 @@
 import logging
+import os
+import re
 
 import apprise
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_for_telegram(content: str) -> str:
+    """清理内容以适配 Telegram（移除 HTML 和 Markdown 格式）"""
+    # 移除 HTML 标签
+    content = re.sub(r"</?table[^>]*>", "", content)
+    content = re.sub(r"</?thead[^>]*>", "", content)
+    content = re.sub(r"</?tbody[^>]*>", "", content)
+    content = re.sub(r"</?tr[^>]*>", "\n", content)
+    content = re.sub(r"</?th[^>]*>", " | ", content)
+    content = re.sub(r"</?td[^>]*>", " | ", content)
+    content = re.sub(r"</?div[^>]*>", "", content)
+    content = re.sub(r"</?span[^>]*>", "", content)
+    content = re.sub(r"</?p[^>]*>", "\n", content)
+    content = re.sub(r"<br\s*/?>", "\n", content)
+
+    # 移除 Markdown 格式
+    content = re.sub(r"^#{1,6}\s*", "", content, flags=re.MULTILINE)  # 移除标题 #
+    content = re.sub(r"\*\*(.+?)\*\*", r"\1", content)  # 移除粗体 **
+    content = re.sub(r"\*(.+?)\*", r"\1", content)  # 移除斜体 *
+    content = re.sub(r"__(.+?)__", r"\1", content)  # 移除粗体 __
+    content = re.sub(r"_(.+?)_", r"\1", content)  # 移除斜体 _
+    content = re.sub(r"~~(.+?)~~", r"\1", content)  # 移除删除线
+    content = re.sub(r"`(.+?)`", r"\1", content)  # 移除行内代码
+    content = re.sub(r"^\s*[-*+]\s+", "· ", content, flags=re.MULTILINE)  # 列表符号改为 ·
+    content = re.sub(r"^\s*\d+\.\s+", "", content, flags=re.MULTILINE)  # 移除有序列表数字
+
+    # 清理多余空白
+    content = re.sub(r"\n\s*\n\s*\n", "\n\n", content)
+    content = re.sub(r" +", " ", content)
+    return content.strip()
 
 # 渠道类型定义 (label + 表单字段)
 CHANNEL_TYPES = {
@@ -47,6 +80,12 @@ CHANNEL_TYPES = {
 
 # 通过 Apprise 支持的渠道类型
 _APPRISE_TYPES = {"telegram", "bark", "dingtalk", "lark", "discord", "pushover"}
+
+# 支持 Markdown 的渠道（不需要 sanitize）
+_MARKDOWN_CHANNELS = {"wecom", "serverchan", "pushplus", "dingtalk", "lark", "discord"}
+
+# 不支持 Markdown 的渠道（需要 sanitize）
+_PLAIN_TEXT_CHANNELS = {"telegram", "bark", "pushover"}
 
 
 def build_apprise_url(channel_type: str, config: dict) -> str:
@@ -132,22 +171,36 @@ class NotifierManager:
             logger.warning("没有可用的通知渠道")
             return
 
-        # Apprise 渠道
+        # 准备纯文本版本（用于不支持 Markdown 的渠道）
+        plain_content = sanitize_for_telegram(content)
+
+        # 准备附件
+        attachments = None
+        if images:
+            attachments = apprise.AppriseAttachment()
+            for img_path in images:
+                if img_path and os.path.exists(img_path):
+                    attachments.add(img_path)
+
+        # Apprise 渠道（使用纯文本，因为 Telegram 等不支持 Markdown）
         if len(self._ap) > 0:
             success = await self._ap.async_notify(
                 title=title,
-                body=content,
-                body_format=apprise.NotifyFormat.MARKDOWN,
+                body=plain_content,
+                body_format=apprise.NotifyFormat.TEXT,
+                attach=attachments,
             )
             if success:
                 logger.info(f"Apprise 通知发送成功: {title}")
             else:
                 logger.error(f"Apprise 通知发送失败: {title}")
 
-        # 自定义渠道
+        # 自定义渠道（根据渠道类型自动选择格式）
         for ch_type, config in self._custom_channels:
             try:
-                await self._send_custom(ch_type, config, title, content)
+                # 支持 Markdown 的渠道使用原始内容，否则使用纯文本
+                ch_content = content if ch_type in _MARKDOWN_CHANNELS else plain_content
+                await self._send_custom(ch_type, config, title, ch_content)
             except Exception as e:
                 logger.error(f"自定义渠道 {ch_type} 发送失败: {e}")
 
