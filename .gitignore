@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/*.db
+data/*.json
+data/ca-bundle.pem
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
