@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Newspaper, RefreshCw, Clock, Star, Filter, ExternalLink } from 'lucide-react'
-import { fetchAPI } from '@/lib/utils'
+import { fetchAPI, useLocalStorage } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
@@ -45,7 +45,7 @@ export default function NewsPage() {
   const [loading, setLoading] = useState(true)
   const [selectedSymbol, setSelectedSymbol] = useState<string>('all')
   const [timeRange, setTimeRange] = useState<string>('12')
-  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [autoRefresh, setAutoRefresh] = useLocalStorage('panwatch_news_autoRefresh', false)
   const [filterRelated] = useState(true)
 
   // 加载自选股列表

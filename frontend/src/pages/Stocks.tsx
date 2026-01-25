@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronRight, Zap, Cpu, Bell, Clock, Newspaper, ExternalLink } from 'lucide-react'
-import { fetchAPI, type AIService, type NotifyChannel } from '@/lib/utils'
+import { fetchAPI, useLocalStorage, type AIService, type NotifyChannel } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -181,9 +181,9 @@ export default function StocksPage() {
   // Quotes for all stocks (used in stock list)
   const [quotes, setQuotes] = useState<Record<string, { current_price: number; change_pct: number }>>({})
 
-  // Auto-refresh
-  const [autoRefresh, setAutoRefresh] = useState(false)
-  const [refreshInterval, setRefreshInterval] = useState(30) // seconds
+  // Auto-refresh (持久化到 localStorage)
+  const [autoRefresh, setAutoRefresh] = useLocalStorage('panwatch_stocks_autoRefresh', false)
+  const [refreshInterval, setRefreshInterval] = useLocalStorage('panwatch_stocks_refreshInterval', 30)
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(null)
   const refreshTimerRef = useRef<ReturnType<typeof setInterval>>()
 

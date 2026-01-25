@@ -1,8 +1,38 @@
+import { useState, useEffect } from 'react'
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
+}
+
+/**
+ * 持久化到 localStorage 的 useState
+ * @param key localStorage 键名
+ * @param defaultValue 默认值
+ */
+export function useLocalStorage<T>(key: string, defaultValue: T): [T, (value: T | ((prev: T) => T)) => void] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const saved = localStorage.getItem(key)
+      if (saved !== null) {
+        return JSON.parse(saved)
+      }
+    } catch {
+      // ignore
+    }
+    return defaultValue
+  })
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value))
+    } catch {
+      // ignore
+    }
+  }, [key, value])
+
+  return [value, setValue]
 }
 
 const API_BASE = '/api'

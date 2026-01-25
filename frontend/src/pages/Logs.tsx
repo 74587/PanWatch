@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Search, Trash2, RefreshCw, ScrollText } from 'lucide-react'
-import { fetchAPI } from '@/lib/utils'
+import { fetchAPI, useLocalStorage } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
@@ -41,7 +41,7 @@ export default function LogsPage() {
   const [query, setQuery] = useState('')
   const [selectedLevels, setSelectedLevels] = useState<string[]>([])
   const [timeRange, setTimeRange] = useState(0)
-  const [autoRefresh, setAutoRefresh] = useState(false)
+  const [autoRefresh, setAutoRefresh] = useLocalStorage('panwatch_logs_autoRefresh', false)
   const [offset, setOffset] = useState(0)
   const searchTimer = useRef<ReturnType<typeof setTimeout>>()
   const refreshTimer = useRef<ReturnType<typeof setInterval>>()

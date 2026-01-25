@@ -18,7 +18,7 @@ import {
   Sun,
   Moon,
 } from 'lucide-react'
-import { fetchAPI } from '@/lib/utils'
+import { fetchAPI, useLocalStorage } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
@@ -127,9 +127,9 @@ export default function DashboardPage() {
   const [scanning, setScanning] = useState(false)
   const [enableAIAnalysis, setEnableAIAnalysis] = useState(true)
 
-  // Auto-refresh
-  const [autoRefresh, setAutoRefresh] = useState(false)
-  const [refreshInterval, setRefreshInterval] = useState(30)
+  // Auto-refresh (持久化到 localStorage)
+  const [autoRefresh, setAutoRefresh] = useLocalStorage('panwatch_dashboard_autoRefresh', false)
+  const [refreshInterval, setRefreshInterval] = useLocalStorage('panwatch_dashboard_refreshInterval', 30)
   const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(null)
   const refreshTimerRef = useRef<ReturnType<typeof setInterval>>()
 
