@@ -23,6 +23,7 @@ class AgentConfigResponse(BaseModel):
     description: str
     enabled: bool
     schedule: str
+    execution_mode: str  # batch / single
     ai_model_id: int | None
     notify_channel_ids: list[int]
     config: dict
@@ -58,6 +59,7 @@ def _agent_to_response(agent: AgentConfig) -> dict:
         "description": agent.description,
         "enabled": agent.enabled,
         "schedule": agent.schedule or "",
+        "execution_mode": agent.execution_mode or "batch",
         "ai_model_id": agent.ai_model_id,
         "notify_channel_ids": agent.notify_channel_ids or [],
         "config": agent.config or {},
@@ -106,3 +108,100 @@ def get_agent_history(agent_name: str, limit: int = 20, db: Session = Depends(ge
         .limit(limit)
         .all()
     )
+
+
+@router.post("/intraday/scan")
+async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
+    """
+    实时扫描所有持仓股票的异动情况（供首页调用）
+
+    Args:
+        analyze: 是否调用 AI 分析生成操作建议（默认 False）
+    """
+    from server import (
+        load_watchlist_for_agent,
+        load_portfolio_for_agent,
+        get_agent_config,
+        _get_proxy,
+        resolve_ai_model,
+        _build_ai_client,
+    )
+    from src.config import Settings, AppConfig
+    from src.agents.base import AgentContext, PortfolioInfo
+    from src.agents.intraday_monitor import IntradayMonitorAgent
+    from src.core.notifier import NotifierManager
+
+    agent_name = "intraday_monitor"
+    watchlist = load_watchlist_for_agent(agent_name)
+
+    # 如果盘中监测没有关联股票，使用 daily_report 的
+    if not watchlist:
+        watchlist = load_watchlist_for_agent("daily_report")
+
+    if not watchlist:
+        return {"alerts": [], "message": "无自选股"}
+
+    settings = Settings()
+    proxy = _get_proxy() or settings.http_proxy
+    portfolio = load_portfolio_for_agent(agent_name)
+    if not portfolio.accounts:
+        portfolio = load_portfolio_for_agent("daily_report")
+
+    model, service = resolve_ai_model(agent_name)
+    ai_client = _build_ai_client(model, service, proxy)
+
+    # 不需要通知，创建空的 notifier
+    notifier = NotifierManager()
+
+    config = AppConfig(settings=settings, watchlist=watchlist)
+    context = AgentContext(
+        ai_client=ai_client,
+        notifier=notifier,
+        config=config,
+        portfolio=portfolio,
+        model_label="",
+    )
+
+    # 使用配置初始化 Agent
+    agent_config = get_agent_config(agent_name)
+    agent = IntradayMonitorAgent(**agent_config) if agent_config else IntradayMonitorAgent()
+
+    # 采集和检测异动
+    data = await agent.collect(context)
+    alerts = data.get("alerts", [])
+
+    # 构建返回结果
+    result_alerts = []
+    for a in alerts:
+        alert_data = {
+            "symbol": a.symbol,
+            "name": a.name,
+            "alert_type": a.alert_type,
+            "current_price": a.current_price,
+            "change_pct": a.change_pct,
+            "message": a.message,
+            "has_position": a.has_position,
+            "cost_price": a.cost_price,
+            "pnl_pct": a.pnl_pct,
+            "trading_style": a.trading_style,
+            "suggestion": None,
+        }
+
+        # 如果需要 AI 分析
+        if analyze and a.has_position:
+            try:
+                # 构建单只股票的 prompt 并调用 AI
+                single_data = {"alerts": [a], **data}
+                system_prompt, user_content = agent.build_prompt(single_data, context)
+                suggestion = await ai_client.chat(system_prompt, user_content)
+                alert_data["suggestion"] = suggestion.strip()
+            except Exception as e:
+                alert_data["suggestion"] = f"分析失败: {e}"
+
+        result_alerts.append(alert_data)
+
+    return {
+        "alerts": result_alerts,
+        "scanned_count": len(watchlist),
+        "alert_count": len(alerts),
+    }

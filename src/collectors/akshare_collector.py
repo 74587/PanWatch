@@ -21,9 +21,11 @@ CN_INDICES = [
 
 
 def _tencent_symbol(symbol: str, market: MarketCode = MarketCode.CN) -> str:
-    """转换为腾讯 API 格式: sh600519 / sz000001"""
+    """转换为腾讯 API 格式: sh600519 / sz000001 / hk00700 / usAAPL"""
     if market == MarketCode.HK:
         return f"hk{symbol}"
+    if market == MarketCode.US:
+        return f"us{symbol}"
     # A股: 6开头沪市, 其余深市
     prefix = "sh" if symbol.startswith("6") or symbol.startswith("000") else "sz"
     return prefix + symbol
@@ -50,9 +52,14 @@ def _parse_tencent_line(line: str) -> dict | None:
                 except (ValueError, IndexError):
                     pass
 
+        # 处理美股 symbol（如 AAPL.OQ -> AAPL）
+        symbol = parts[2]
+        if "." in symbol:
+            symbol = symbol.split(".")[0]
+
         return {
             "name": parts[1],
-            "symbol": parts[2],
+            "symbol": symbol,
             "current_price": float(parts[3] or 0),
             "prev_close": float(parts[4] or 0),
             "open_price": float(parts[5] or 0),
@@ -103,8 +110,6 @@ class AkshareCollector(BaseCollector):
     """基于腾讯 HTTP API 的数据采集器"""
 
     def __init__(self, market: MarketCode):
-        if market == MarketCode.US:
-            raise NotImplementedError("美股数据采集暂未实现")
         self.market = market
 
     async def get_index_data(self) -> list[IndexData]:
@@ -117,6 +122,8 @@ class AkshareCollector(BaseCollector):
             return self._get_cn_stocks(symbols)
         elif self.market == MarketCode.HK:
             return self._get_hk_stocks(symbols)
+        elif self.market == MarketCode.US:
+            return self._get_us_stocks(symbols)
         return []
 
     def _get_cn_index(self) -> list[IndexData]:
@@ -182,6 +189,33 @@ class AkshareCollector(BaseCollector):
                 symbol=item["symbol"],
                 name=item["name"],
                 market=MarketCode.HK,
+                current_price=item["current_price"],
+                change_pct=item["change_pct"],
+                change_amount=item["change_amount"],
+                volume=item["volume"],
+                turnover=item["turnover"],
+                open_price=item["open_price"],
+                high_price=item["high_price"],
+                low_price=item["low_price"],
+                prev_close=item["prev_close"],
+                timestamp=datetime.now(),
+            )
+            for item in items
+        ]
+
+    def _get_us_stocks(self, symbols: list[str]) -> list[StockData]:
+        tencent_symbols = [_tencent_symbol(s, MarketCode.US) for s in symbols]
+        try:
+            items = _fetch_tencent_quotes(tencent_symbols)
+        except Exception as e:
+            logger.error(f"获取美股行情失败: {e}")
+            return []
+
+        return [
+            StockData(
+                symbol=item["symbol"],
+                name=item["name"],
+                market=MarketCode.US,
                 current_price=item["current_price"],
                 change_pct=item["change_pct"],
                 change_amount=item["change_amount"],

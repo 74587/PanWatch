@@ -88,6 +88,7 @@ class Position(Base):
     cost_price = Column(Float, nullable=False)  # 成本价
     quantity = Column(Integer, nullable=False)  # 持仓数量
     invested_amount = Column(Float, nullable=True)  # 投入资金（用于盘中监控）
+    trading_style = Column(String, default="swing")  # short: 短线, swing: 波段, long: 长线
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -120,6 +121,8 @@ class AgentConfig(Base):
     description = Column(String, default="")
     enabled = Column(Boolean, default=True)
     schedule = Column(String, default="")
+    # 执行模式: batch=批量(多只股票一起分析发送) / single=单只(逐只分析发送，实时性高)
+    execution_mode = Column(String, default="batch")
     ai_model_id = Column(Integer, ForeignKey("ai_models.id", ondelete="SET NULL"), nullable=True)
     notify_channel_ids = Column(JSON, default=[])
     config = Column(JSON, default={})
@@ -187,3 +190,15 @@ class NewsCache(Base):
     symbols = Column(JSON, default=[])           # 关联股票代码列表
     importance = Column(Integer, default=0)      # 0-3 重要性
     created_at = Column(DateTime, server_default=func.now())
+
+
+class NotifyThrottle(Base):
+    """通知节流记录（防止同一股票短时间内重复通知）"""
+    __tablename__ = "notify_throttle"
+    __table_args__ = (UniqueConstraint("agent_name", "stock_symbol", name="uq_agent_stock_throttle"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_name = Column(String, nullable=False)
+    stock_symbol = Column(String, nullable=False)
+    last_notify_at = Column(DateTime, nullable=False)
+    notify_count = Column(Integer, default=1)  # 当日通知次数

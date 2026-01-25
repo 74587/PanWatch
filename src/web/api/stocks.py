@@ -8,7 +8,7 @@ from src.web.database import get_db
 from src.web.models import Stock, StockAgent, AgentConfig
 from src.web.stock_list import search_stocks, refresh_stock_list
 from src.collectors.akshare_collector import _tencent_symbol, _fetch_tencent_quotes
-from src.models.market import MarketCode
+from src.models.market import MarketCode, MARKETS
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -74,6 +74,59 @@ def _stock_to_response(stock: Stock) -> dict:
     }
 
 
+@router.get("/markets/status")
+def get_market_status():
+    """获取各市场的交易状态"""
+    from datetime import datetime
+
+    result = []
+    for market_code, market_def in MARKETS.items():
+        now = datetime.now(market_def.get_tz())
+        is_trading = market_def.is_trading_time()
+
+        # 获取交易时段描述
+        sessions_desc = []
+        for session in market_def.sessions:
+            sessions_desc.append(f"{session.start.strftime('%H:%M')}-{session.end.strftime('%H:%M')}")
+
+        # 判断状态
+        weekday = now.weekday()
+        current_time = now.time()
+
+        if weekday >= 5:
+            status = "closed"
+            status_text = "休市（周末）"
+        elif is_trading:
+            status = "trading"
+            status_text = "交易中"
+        else:
+            # 判断是盘前还是盘后
+            first_session = market_def.sessions[0]
+            last_session = market_def.sessions[-1]
+            if current_time < first_session.start:
+                status = "pre_market"
+                status_text = "盘前"
+            elif current_time > last_session.end:
+                status = "after_hours"
+                status_text = "已收盘"
+            else:
+                status = "break"
+                status_text = "午间休市"
+
+        result.append({
+            "code": market_code.value,
+            "name": market_def.name,
+            "status": status,
+            "status_text": status_text,
+            "is_trading": is_trading,
+            "sessions": sessions_desc,
+            "local_time": now.strftime("%H:%M"),
+            "timezone": market_def.timezone,
+        })
+
+    return result
+
+
 @router.get("/search")
 def search(q: str = Query("", min_length=1), market: str = Query("")):
     """模糊搜索股票(代码/名称)"""
@@ -110,9 +163,6 @@ def get_quotes(db: Session = Depends(get_db)):
         try:
             market_code = MarketCode(market)
         except ValueError:
-            continue
-
-        if market_code == MarketCode.US:
             continue
 
         symbols = [_tencent_symbol(s.symbol, market_code) for s in stock_list]
@@ -199,7 +249,12 @@ def update_stock_agents(stock_id: int, body: StockAgentUpdate, db: Session = Dep
 
 
 @router.post("/{stock_id}/agents/{agent_name}/trigger")
-async def trigger_stock_agent(stock_id: int, agent_name: str, db: Session = Depends(get_db)):
+async def trigger_stock_agent(
+    stock_id: int,
+    agent_name: str,
+    bypass_throttle: bool = False,
+    db: Session = Depends(get_db),
+):
     """手动触发某只股票的指定 Agent"""
     db_stock = db.query(Stock).filter(Stock.id == stock_id).first()
     if not db_stock:
@@ -215,7 +270,9 @@ async def trigger_stock_agent(stock_id: int, agent_name: str, db: Session = Depe
 
     from server import trigger_agent_for_stock
     try:
-        result = await trigger_agent_for_stock(agent_name, db_stock, stock_agent_id=sa.id)
+        result = await trigger_agent_for_stock(
+            agent_name, db_stock, stock_agent_id=sa.id, bypass_throttle=bypass_throttle
+        )
         logger.info(f"Agent {agent_name} 执行完成 - {db_stock.symbol}")
         return {"result": result}
     except ValueError as e:

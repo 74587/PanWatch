@@ -23,6 +23,7 @@ class PositionInfo:
     cost_price: float
     quantity: int
     invested_amount: float | None = None
+    trading_style: str = "swing"  # short: 短线, swing: 波段, long: 长线
 
     @property
     def cost_value(self) -> float:
@@ -74,7 +75,7 @@ class PortfolioInfo:
     def get_aggregated_position(self, symbol: str) -> dict | None:
         """
         获取某只股票的汇总持仓（合并所有账户）
-        返回: {"symbol", "name", "total_quantity", "avg_cost", "total_cost", "positions"}
+        返回: {"symbol", "name", "total_quantity", "avg_cost", "total_cost", "trading_style", "positions"}
         """
         positions = self.get_positions_for_stock(symbol)
         if not positions:
@@ -83,6 +84,12 @@ class PortfolioInfo:
         total_quantity = sum(p.quantity for p in positions)
         total_cost = sum(p.cost_value for p in positions)
         avg_cost = total_cost / total_quantity if total_quantity > 0 else 0
+        # 取第一个持仓的交易风格（如果同一股票在多个账户有不同风格，优先取短线）
+        trading_style = positions[0].trading_style
+        for p in positions:
+            if p.trading_style == "short":
+                trading_style = "short"
+                break
 
         return {
             "symbol": symbol,
@@ -91,6 +98,7 @@ class PortfolioInfo:
             "total_quantity": total_quantity,
             "avg_cost": avg_cost,
             "total_cost": total_cost,
+            "trading_style": trading_style,
             "positions": positions,
         }
 
@@ -180,16 +188,20 @@ class BaseAgent(ABC):
             data = await self.collect(context)
             result = await self.analyze(context, data)
 
+            notified = False
             if await self.should_notify(result):
                 await context.notifier.notify(
                     result.title,
                     result.content,
                     result.images,
                 )
+                notified = True
                 logger.info(f"Agent [{self.display_name}] 通知已发送")
             else:
                 logger.info(f"Agent [{self.display_name}] 无需通知")
 
+            # 记录是否发送了通知
+            result.raw_data["notified"] = notified
             return result
 
         except Exception as e:

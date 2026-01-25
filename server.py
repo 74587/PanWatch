@@ -17,6 +17,7 @@ from src.agents.base import AgentContext, PortfolioInfo, AccountInfo, PositionIn
 from src.agents.daily_report import DailyReportAgent
 from src.agents.news_digest import NewsDigestAgent
 from src.agents.chart_analyst import ChartAnalystAgent
+from src.agents.intraday_monitor import IntradayMonitorAgent
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +81,22 @@ def seed_agents():
             "description": "每日收盘后生成自选股日报，包含大盘概览、个股分析和明日关注",
             "enabled": True,
             "schedule": "30 15 * * 1-5",
+            "execution_mode": "batch",  # 批量模式：多只股票一起分析
         },
         {
             "name": "intraday_monitor",
-            "display_name": "盘中监控",
-            "description": "交易时段定时分析自选股，异动时主动通知",
+            "display_name": "盘中监测",
+            "description": "交易时段实时监控，AI 智能判断是否有值得关注的信号",
             "enabled": False,
-            "schedule": "*/30 9-15 * * 1-5",
+            "schedule": "*/5 9-15 * * 1-5",  # 每5分钟扫描一次
+            "execution_mode": "single",  # 单只模式：逐只分析，实时发送
+            "config": {
+                "price_alert_threshold": 3.0,   # 涨跌幅超过3%触发
+                "volume_alert_ratio": 2.0,      # 量比超过2倍触发
+                "stop_loss_warning": -5.0,      # 亏损超过5%预警
+                "take_profit_warning": 10.0,    # 盈利超过10%提醒
+                "throttle_minutes": 30,         # 同一股票30分钟内不重复通知
+            },
         },
         {
             "name": "news_digest",
@@ -94,6 +104,7 @@ def seed_agents():
             "description": "定时抓取与持仓相关的新闻资讯并推送摘要",
             "enabled": False,
             "schedule": "0 9-18/2 * * 1-5",
+            "execution_mode": "batch",
         },
         {
             "name": "morning_brief",
@@ -101,6 +112,7 @@ def seed_agents():
             "description": "每日开盘前分析隔夜外盘和新闻，给出今日关注点",
             "enabled": False,
             "schedule": "0 9 * * 1-5",
+            "execution_mode": "batch",
         },
         {
             "name": "chart_analyst",
@@ -108,6 +120,7 @@ def seed_agents():
             "description": "截取 K 线图并使用多模态 AI 进行技术分析",
             "enabled": False,
             "schedule": "0 15 * * 1-5",
+            "execution_mode": "single",
         },
     ]
 
@@ -115,6 +128,12 @@ def seed_agents():
         existing = db.query(AgentConfig).filter(AgentConfig.name == agent_data["name"]).first()
         if not existing:
             db.add(AgentConfig(**agent_data))
+        else:
+            # 始终同步 execution_mode（确保代码中的定义生效）
+            existing.execution_mode = agent_data.get("execution_mode", "batch")
+            # 同步 display_name 和 description
+            existing.display_name = agent_data.get("display_name", existing.display_name)
+            existing.description = agent_data.get("description", existing.description)
 
     db.commit()
     db.close()
@@ -254,6 +273,7 @@ def load_portfolio_for_agent(agent_name: str) -> PortfolioInfo:
                     cost_price=pos.cost_price,
                     quantity=pos.quantity,
                     invested_amount=pos.invested_amount,
+                    trading_style=pos.trading_style or "swing",
                 ))
 
             account_infos.append(AccountInfo(
@@ -304,6 +324,7 @@ def load_portfolio_for_stock(stock_id: int) -> PortfolioInfo:
                     cost_price=pos.cost_price,
                     quantity=pos.quantity,
                     invested_amount=pos.invested_amount,
+                    trading_style=pos.trading_style or "swing",
                 ))
 
             account_infos.append(AccountInfo(
@@ -468,6 +489,7 @@ AGENT_REGISTRY: dict[str, type] = {
     "daily_report": DailyReportAgent,
     "news_digest": NewsDigestAgent,
     "chart_analyst": ChartAnalystAgent,
+    "intraday_monitor": IntradayMonitorAgent,
 }
 
 
@@ -503,8 +525,28 @@ def _log_trigger_info(agent_name: str, stocks: list, model: AIModel | None, serv
     logger.info(f"[触发] Agent={agent_name} | 股票=[{stock_names}] | AI={ai_info} | 通知=[{channel_info}]")
 
 
+def get_agent_execution_mode(agent_name: str) -> str:
+    """获取 Agent 的执行模式"""
+    db = SessionLocal()
+    try:
+        agent = db.query(AgentConfig).filter(AgentConfig.name == agent_name).first()
+        return agent.execution_mode if agent and agent.execution_mode else "batch"
+    finally:
+        db.close()
+
+
+def get_agent_config(agent_name: str) -> dict:
+    """获取 Agent 的配置参数"""
+    db = SessionLocal()
+    try:
+        agent = db.query(AgentConfig).filter(AgentConfig.name == agent_name).first()
+        return agent.config if agent and agent.config else {}
+    finally:
+        db.close()
+
+
 async def trigger_agent(agent_name: str) -> str:
-    """手动触发 Agent 执行（所有关联股票）"""
+    """手动触发 Agent 执行（根据执行模式处理）"""
     agent_cls = AGENT_REGISTRY.get(agent_name)
     if not agent_cls:
         raise ValueError(f"Agent {agent_name} 未注册实际实现")
@@ -518,12 +560,35 @@ async def trigger_agent(agent_name: str) -> str:
     _log_trigger_info(agent_name, watchlist, model, service, channels)
 
     context = build_context(agent_name)
-    agent = agent_cls()
-    result = await agent.run(context)
-    return result.content
+    execution_mode = get_agent_execution_mode(agent_name)
+    agent_config = get_agent_config(agent_name)
+
+    # 根据配置初始化 Agent
+    if agent_config:
+        agent = agent_cls(**agent_config)
+    else:
+        agent = agent_cls()
+
+    if execution_mode == "single" and hasattr(agent, "run_single"):
+        # 单只模式：逐只股票分析
+        results = []
+        for stock in watchlist:
+            result = await agent.run_single(context, stock.symbol)
+            if result:
+                results.append(f"{stock.name}: {result.content[:100]}...")
+        return "\n\n".join(results) if results else "无异动"
+    else:
+        # 批量模式：所有股票一起分析
+        result = await agent.run(context)
+        return result.content
 
 
-async def trigger_agent_for_stock(agent_name: str, stock, stock_agent_id: int | None = None) -> str:
+async def trigger_agent_for_stock(
+    agent_name: str,
+    stock,
+    stock_agent_id: int | None = None,
+    bypass_throttle: bool = False,
+) -> dict:
     """手动触发 Agent 执行（单只股票）"""
     agent_cls = AGENT_REGISTRY.get(agent_name)
     if not agent_cls:
@@ -562,10 +627,22 @@ async def trigger_agent_for_stock(agent_name: str, stock, stock_agent_id: int | 
         portfolio=portfolio,
         model_label=model_label,
     )
-    agent = agent_cls()
+
+    # 创建 agent，支持 bypass_throttle 参数
+    if agent_name == "intraday_monitor" and bypass_throttle:
+        agent = agent_cls(bypass_throttle=True)
+    else:
+        agent = agent_cls()
 
     result = await agent.run(context)
-    return result.content
+
+    # 返回详细结果
+    return {
+        "title": result.title,
+        "content": result.content,
+        "should_alert": result.raw_data.get("should_alert", True),
+        "notified": result.raw_data.get("notified", False),
+    }
 
 
 @asynccontextmanager
@@ -576,6 +653,16 @@ async def lifespan(app):
     setup_ssl()
     seed_agents()
     seed_data_sources()
+
+    # 后台刷新股票列表缓存
+    import threading
+    from src.web.stock_list import get_stock_list, refresh_stock_list
+    def refresh_stock_cache():
+        stocks = get_stock_list()
+        if not stocks or len([s for s in stocks if s['market'] == 'CN']) == 0:
+            logger.info("股票列表缓存为空或缺少 A 股，后台刷新中...")
+            refresh_stock_list()
+    threading.Thread(target=refresh_stock_cache, daemon=True).start()
 
     global scheduler
     scheduler = build_scheduler()

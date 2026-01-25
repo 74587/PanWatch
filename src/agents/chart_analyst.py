@@ -158,3 +158,35 @@ class ChartAnalystAgent(BaseAgent):
         """有截图且有内容时通知"""
         screenshots = result.raw_data.get("screenshots", [])
         return len(screenshots) > 0 and len(result.content) > 50
+
+    async def run_single(self, context: AgentContext, stock_symbol: str) -> AnalysisResult | None:
+        """
+        单只模式执行：只分析指定的一只股票
+
+        用于逐只分析场景，每只股票独立截图、分析和通知
+        """
+        # 过滤只保留指定股票
+        original_watchlist = context.config.watchlist
+        context.config.watchlist = [s for s in original_watchlist if s.symbol == stock_symbol]
+
+        if not context.config.watchlist:
+            return None
+
+        try:
+            data = await self.collect(context)
+            if not data.get("screenshots"):
+                return None
+
+            result = await self.analyze(context, data)
+
+            if await self.should_notify(result):
+                await context.notifier.notify(
+                    result.title,
+                    result.content,
+                    result.images,
+                )
+                logger.info(f"Agent [{self.display_name}] 通知已发送: {stock_symbol}")
+
+            return result
+        finally:
+            context.config.watchlist = original_watchlist

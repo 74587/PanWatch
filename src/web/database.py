@@ -59,6 +59,10 @@ def _migrate(engine):
         ("stock_agents", "notify_channel_ids", "ALTER TABLE stock_agents ADD COLUMN notify_channel_ids TEXT DEFAULT '[]'"),
         # Phase 3: 持仓增强
         ("stocks", "invested_amount", "ALTER TABLE stocks ADD COLUMN invested_amount REAL"),
+        # Phase 4: Agent 执行模式
+        ("agent_configs", "execution_mode", "ALTER TABLE agent_configs ADD COLUMN execution_mode TEXT DEFAULT 'batch'"),
+        # Phase 4: 持仓交易风格
+        ("positions", "trading_style", "ALTER TABLE positions ADD COLUMN trading_style TEXT DEFAULT 'swing'"),
     ]
     with engine.connect() as conn:
         for table, column, sql in migrations:
