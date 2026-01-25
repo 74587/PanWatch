@@ -8,6 +8,21 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def get_global_proxy() -> str:
+    """获取全局 HTTP 代理设置"""
+    try:
+        from src.web.database import SessionLocal
+        from src.web.models import AppSettings
+        db = SessionLocal()
+        try:
+            setting = db.query(AppSettings).filter(AppSettings.key == "http_proxy").first()
+            return setting.value if setting and setting.value else ""
+        finally:
+            db.close()
+    except Exception:
+        return ""
+
+
 def sanitize_for_telegram(content: str) -> str:
     """清理内容以适配 Telegram（移除 HTML 和 Markdown 格式）"""
     # 移除 HTML 标签
@@ -103,8 +118,8 @@ def build_apprise_url(channel_type: str, config: dict) -> str | None:
         chat_id = config.get("chat_id", "")
         if not bot_token or not chat_id:
             raise ValueError("Telegram 需要 bot_token 和 chat_id")
-        # 如果配置了代理，返回 None，使用自定义方式发送
-        proxy = config.get("proxy", "").strip()
+        # 如果配置了代理（渠道级或全局），返回 None，使用自定义方式发送
+        proxy = config.get("proxy", "").strip() or get_global_proxy()
         if proxy:
             return None
         return f"tgram://{bot_token}/{chat_id}"
@@ -257,7 +272,8 @@ class NotifierManager:
         """Telegram Bot API（支持代理）"""
         bot_token = config.get("bot_token", "")
         chat_id = config.get("chat_id", "")
-        proxy = config.get("proxy", "").strip()
+        # 渠道级代理优先，否则使用全局代理
+        proxy = config.get("proxy", "").strip() or get_global_proxy()
 
         if not bot_token or not chat_id:
             raise ValueError("Telegram 需要 bot_token 和 chat_id")
