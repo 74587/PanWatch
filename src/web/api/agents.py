@@ -129,7 +129,7 @@ def get_agent_history(agent_name: str, limit: int = 20, db: Session = Depends(ge
 @router.post("/intraday/scan")
 async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
     """
-    实时扫描所有持仓股票的异动情况（供首页调用）
+    实时扫描所有自选股的异动情况（供首页调用）
 
     Args:
         analyze: 是否调用 AI 分析生成操作建议（默认 False）
@@ -137,15 +137,13 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
     from server import (
         load_watchlist_for_agent,
         load_portfolio_for_agent,
-        get_agent_config,
         _get_proxy,
         resolve_ai_model,
         _build_ai_client,
     )
-    from src.config import Settings, AppConfig
-    from src.agents.base import AgentContext, PortfolioInfo
-    from src.agents.intraday_monitor import IntradayMonitorAgent
-    from src.core.notifier import NotifierManager
+    from src.config import Settings
+    from src.collectors.akshare_collector import AkshareCollector
+    from src.models.market import MarketCode, MARKETS
 
     agent_name = "intraday_monitor"
     watchlist = load_watchlist_for_agent(agent_name)
@@ -155,69 +153,103 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
         watchlist = load_watchlist_for_agent("daily_report")
 
     if not watchlist:
-        return {"alerts": [], "message": "无自选股"}
+        return {"alerts": [], "message": "无自选股", "scanned_count": 0, "alert_count": 0}
 
-    settings = Settings()
-    proxy = _get_proxy() or settings.http_proxy
+    # 检查是否有市场在交易
+    any_trading = any(m.is_trading_time() for m in MARKETS.values())
+    if not any_trading:
+        return {
+            "alerts": [],
+            "message": "当前非交易时段",
+            "scanned_count": len(watchlist),
+            "alert_count": 0,
+            "is_trading": False,
+        }
+
+    # 获取持仓信息
     portfolio = load_portfolio_for_agent(agent_name)
     if not portfolio.accounts:
         portfolio = load_portfolio_for_agent("daily_report")
 
-    model, service = resolve_ai_model(agent_name)
-    ai_client = _build_ai_client(model, service, proxy)
+    # 按市场分组采集行情
+    market_symbols: dict[MarketCode, list] = {}
+    symbol_to_stock = {}
+    for stock in watchlist:
+        market_symbols.setdefault(stock.market, []).append(stock.symbol)
+        symbol_to_stock[stock.symbol] = stock
 
-    # 不需要通知，创建空的 notifier
-    notifier = NotifierManager()
+    all_quotes = []
+    for market_code, symbols in market_symbols.items():
+        try:
+            collector = AkshareCollector(market_code)
+            stocks = await collector.get_stock_data(symbols)
+            all_quotes.extend(stocks)
+        except Exception as e:
+            logger.error(f"采集 {market_code.value} 行情失败: {e}")
 
-    config = AppConfig(settings=settings, watchlist=watchlist)
-    context = AgentContext(
-        ai_client=ai_client,
-        notifier=notifier,
-        config=config,
-        portfolio=portfolio,
-        model_label="",
-    )
+    # 检测异动（涨跌幅超过阈值）
+    ALERT_THRESHOLD = 3.0  # 涨跌幅超过 3% 视为异动
+    alerts = []
 
-    # 使用配置初始化 Agent
-    agent_config = get_agent_config(agent_name)
-    agent = IntradayMonitorAgent(**agent_config) if agent_config else IntradayMonitorAgent()
+    for quote in all_quotes:
+        change_pct = quote.change_pct or 0
+        if abs(change_pct) < ALERT_THRESHOLD:
+            continue
 
-    # 采集和检测异动
-    data = await agent.collect(context)
-    alerts = data.get("alerts", [])
+        # 获取持仓信息
+        positions = portfolio.get_positions_for_stock(quote.symbol)
+        has_position = len(positions) > 0
+        cost_price = positions[0].cost_price if positions else None
+        trading_style = positions[0].trading_style if positions else None
+        pnl_pct = None
+        if cost_price and quote.current_price:
+            pnl_pct = (quote.current_price - cost_price) / cost_price * 100
 
-    # 构建返回结果
-    result_alerts = []
-    for a in alerts:
-        alert_data = {
-            "symbol": a.symbol,
-            "name": a.name,
-            "alert_type": a.alert_type,
-            "current_price": a.current_price,
-            "change_pct": a.change_pct,
-            "message": a.message,
-            "has_position": a.has_position,
-            "cost_price": a.cost_price,
-            "pnl_pct": a.pnl_pct,
-            "trading_style": a.trading_style,
+        alert_type = "急涨" if change_pct > 0 else "急跌"
+
+        alerts.append({
+            "symbol": quote.symbol,
+            "name": quote.name,
+            "alert_type": alert_type,
+            "current_price": quote.current_price,
+            "change_pct": change_pct,
+            "message": f"{quote.name} {alert_type} {change_pct:+.2f}%",
+            "has_position": has_position,
+            "cost_price": cost_price,
+            "pnl_pct": pnl_pct,
+            "trading_style": trading_style,
             "suggestion": None,
-        }
+        })
 
-        # 如果需要 AI 分析
-        if analyze and a.has_position:
-            try:
-                # 构建单只股票的 prompt 并调用 AI
-                single_data = {"alerts": [a], **data}
-                system_prompt, user_content = agent.build_prompt(single_data, context)
-                suggestion = await ai_client.chat(system_prompt, user_content)
-                alert_data["suggestion"] = suggestion.strip()
-            except Exception as e:
-                alert_data["suggestion"] = f"分析失败: {e}"
+    # AI 分析（可选）
+    if analyze and alerts:
+        settings = Settings()
+        proxy = _get_proxy() or settings.http_proxy
+        model, service = resolve_ai_model(agent_name)
 
-        result_alerts.append(alert_data)
+        if model and service:
+            ai_client = _build_ai_client(model, service, proxy)
+
+            for alert in alerts:
+                if not alert["has_position"]:
+                    continue
+                try:
+                    prompt = f"""股票 {alert['name']}({alert['symbol']}) 今日{alert['alert_type']}，涨跌幅 {alert['change_pct']:+.2f}%。
+当前价格: {alert['current_price']}
+持仓成本: {alert['cost_price']}
+持仓盈亏: {alert['pnl_pct']:+.1f}%
+交易风格: {alert['trading_style'] or '波段'}
+
+请简要分析是否需要操作（20字以内）。"""
+                    suggestion = await ai_client.chat("你是股票分析助手，给出简洁建议。", prompt)
+                    alert["suggestion"] = suggestion.strip()[:50]
+                except Exception as e:
+                    alert["suggestion"] = f"分析失败"
+                    logger.error(f"AI 分析失败: {e}")
 
     return {
-        "alerts": result_alerts,
+        "alerts": alerts,
         "scanned_count": len(watchlist),
         "alert_count": len(alerts),
+        "is_trading": True,
     }
