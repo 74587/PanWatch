@@ -65,7 +65,7 @@ CHANNEL_TYPES = {
     },
     "dingtalk": {
         "label": "钉钉机器人",
-        "fields": ["token", "secret"],
+        "fields": ["token", "secret", "phones", "keyword"],  # keyword 选填：安全设置为“关键字”时自动附加
     },
     "wecom": {
         "label": "企业微信机器人",
@@ -135,13 +135,22 @@ def build_apprise_url(channel_type: str, config: dict) -> str | None:
         return f"bark://{device_key}/"
 
     elif channel_type == "dingtalk":
-        token = config.get("token", "")
-        secret = config.get("secret", "")
+        # Apprise 钉钉格式：
+        # - 无加签：dingtalk://{access_token}/
+        # - 加签：  dingtalk://{secret}@{access_token}/
+        # - @手机号：在 URL 末尾追加 ?to=13800138000,13900139000
+        token = (config.get("token") or "").strip()
+        secret = (config.get("secret") or "").strip()
+        phones = (config.get("phones") or "").strip()
         if not token:
             raise ValueError("钉钉需要 token")
-        if secret:
-            return f"dingtalk://{token}/{secret}/"
-        return f"dingtalk://{token}/"
+        base = f"dingtalk://{secret}@{token}/" if secret else f"dingtalk://{token}/"
+        if phones:
+            # 仅保留数字和逗号
+            phone_list = [re.sub(r"[^0-9]", "", p) for p in phones.split(",") if re.sub(r"[^0-9]", "", p)]
+            if phone_list:
+                base += f"?to={','.join(phone_list)}"
+        return base
 
     elif channel_type == "lark":
         webhook_token = config.get("webhook_token", "")
@@ -174,6 +183,8 @@ class NotifierManager:
         self._ap = apprise.Apprise()
         self._custom_channels: list[tuple[str, dict]] = []
         self._channel_count = 0
+        # 钉钉关键字（可选）：若群机器人启用“关键字”安全校验，则自动附加
+        self._dingtalk_keywords: set[str] = set()
 
     def add_channel(self, channel_type: str, config: dict):
         """添加通知渠道"""
@@ -190,6 +201,10 @@ class NotifierManager:
                     logger.info(f"注册通知渠道: {channel_type}")
                 else:
                     logger.error(f"注册通知渠道失败: {channel_type} (URL 无效)")
+                if channel_type == "dingtalk":
+                    kw = (config.get("keyword") or "").strip()
+                    if kw:
+                        self._dingtalk_keywords.add(kw)
             else:
                 self._custom_channels.append((channel_type, config))
                 self._channel_count += 1
@@ -219,6 +234,14 @@ class NotifierManager:
                     attachments.add(img_path)
 
         errors = []
+
+        # 若配置了钉钉关键字，自动追加在内容末尾以通过“关键字”校验
+        if self._dingtalk_keywords:
+            suffix = " " + " ".join(sorted(self._dingtalk_keywords))
+            if suffix.strip() not in plain_content:
+                plain_content = (plain_content + "\n" + suffix).strip()
+            if suffix.strip() not in content:
+                content = (content + "\n" + suffix).strip()
 
         # Apprise 渠道（使用纯文本，因为 Telegram 等不支持 Markdown）
         if len(self._ap) > 0:

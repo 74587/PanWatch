@@ -62,6 +62,8 @@ const CHANNEL_TYPE_FIELDS: Record<string, { label: string; fields: ChannelFieldD
     fields: [
       { key: 'token', label: 'Webhook Token', placeholder: 'access_token 值', secret: true, required: true },
       { key: 'secret', label: '加签密钥', placeholder: 'SEC... (选填)', secret: true },
+      { key: 'phones', label: '@手机号', placeholder: '逗号分隔，如 13800138000,13900139000' },
+      { key: 'keyword', label: '关键字', placeholder: '若群机器人启用“关键字”，填入以自动附加' },
     ],
   },
   wecom: {
