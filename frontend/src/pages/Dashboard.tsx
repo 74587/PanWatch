@@ -13,6 +13,7 @@ import {
   Activity,
   BarChart3,
   Sparkles,
+  Newspaper,
   Sun,
   Moon,
 } from 'lucide-react'
@@ -251,6 +252,7 @@ export default function DashboardPage() {
   // AI Insights
   const [dailyReport, setDailyReport] = useState<AnalysisRecord | null>(null)
   const [premarketOutlook, setPremarketOutlook] = useState<AnalysisRecord | null>(null)
+  const [newsDigest, setNewsDigest] = useState<AnalysisRecord | null>(null)
   const [insightsLoading, setInsightsLoading] = useState(false)
   const [expandedInsight, setExpandedInsight] = useState<string | null>(null)
 
@@ -413,12 +415,14 @@ export default function DashboardPage() {
   const loadAIInsights = async () => {
     setInsightsLoading(true)
     try {
-      const [dailyData, premarketData] = await Promise.all([
+      const [dailyData, premarketData, newsData] = await Promise.all([
         fetchAPI<AnalysisRecord[]>('/history?agent_name=daily_report&limit=1'),
         fetchAPI<AnalysisRecord[]>('/history?agent_name=premarket_outlook&limit=1'),
+        fetchAPI<AnalysisRecord[]>('/history?agent_name=news_digest&limit=1'),
       ])
       setDailyReport(dailyData.length > 0 ? dailyData[0] : null)
       setPremarketOutlook(premarketData.length > 0 ? premarketData[0] : null)
+      setNewsDigest(newsData.length > 0 ? newsData[0] : null)
     } catch (e) {
       console.error('获取 AI 洞察失败:', e)
     } finally {
@@ -820,7 +824,7 @@ export default function DashboardPage() {
             <Sparkles className="w-4 h-4 text-primary" />
             AI 洞察
           </h2>
-          {(dailyReport || premarketOutlook) && (
+          {(dailyReport || premarketOutlook || newsDigest) && (
             <button
               onClick={() => navigate('/history')}
               className="flex items-center gap-1 text-[12px] text-muted-foreground hover:text-primary transition-colors"
@@ -836,7 +840,7 @@ export default function DashboardPage() {
             <div className="h-3 bg-accent/30 rounded w-full mb-2" />
             <div className="h-3 bg-accent/30 rounded w-3/4" />
           </div>
-        ) : !dailyReport && !premarketOutlook ? (
+        ) : !dailyReport && !premarketOutlook && !newsDigest ? (
           <div className="card p-6 text-center">
             <div className="w-12 h-12 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto mb-3">
               <Sparkles className="w-5 h-5 text-primary" />
@@ -911,6 +915,43 @@ export default function DashboardPage() {
                   <div className="mt-3 pt-3 border-t border-border/30">
                     <div className="prose prose-sm dark:prose-invert max-w-none max-h-[300px] overflow-y-auto text-[12px]">
                       <ReactMarkdown>{premarketOutlook.content}</ReactMarkdown>
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); navigate('/history') }}
+                      className="mt-3 text-[11px] text-primary hover:underline"
+                    >
+                      查看历史记录
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 新闻速递 */}
+            {newsDigest && (
+              <div
+                className="card p-4 cursor-pointer hover:bg-accent/30 transition-colors"
+                onClick={() => setExpandedInsight(expandedInsight === 'news' ? null : 'news')}
+              >
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                    <Newspaper className="w-4 h-4 text-blue-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] font-medium text-foreground">新闻速递</span>
+                      <span className="text-[11px] text-muted-foreground">{newsDigest.analysis_date}</span>
+                    </div>
+                    {newsDigest.title && (
+                      <p className="text-[12px] text-muted-foreground truncate">{newsDigest.title}</p>
+                    )}
+                  </div>
+                  <ChevronRight className={`w-4 h-4 text-muted-foreground transition-transform ${expandedInsight === 'news' ? 'rotate-90' : ''}`} />
+                </div>
+                {expandedInsight === 'news' && (
+                  <div className="mt-3 pt-3 border-t border-border/30">
+                    <div className="prose prose-sm dark:prose-invert max-w-none max-h-[300px] overflow-y-auto text-[12px]">
+                      <ReactMarkdown>{newsDigest.content}</ReactMarkdown>
                     </div>
                     <button
                       onClick={(e) => { e.stopPropagation(); navigate('/history') }}

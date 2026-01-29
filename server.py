@@ -1,6 +1,7 @@
 """PanWatch 统一服务入口 - Web 后台 + Agent 调度"""
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -13,6 +14,7 @@ from src.models.market import MarketCode
 from src.core.ai_client import AIClient
 from src.core.notifier import NotifierManager
 from src.core.scheduler import AgentScheduler
+from src.core.agent_runs import record_agent_run
 from src.agents.base import AgentContext, PortfolioInfo, AccountInfo, PositionInfo
 from src.agents.daily_report import DailyReportAgent
 from src.agents.news_digest import NewsDigestAgent
@@ -186,6 +188,10 @@ def seed_agents():
             "enabled": False,
             "schedule": "0 9-18/2 * * 1-5",
             "execution_mode": "batch",
+            "config": {
+                "since_hours": 12,
+                "fallback_since_hours": 24,
+            },
         },
         {
             "name": "premarket_outlook",
@@ -215,6 +221,9 @@ def seed_agents():
             # 同步 display_name 和 description
             existing.display_name = agent_data.get("display_name", existing.display_name)
             existing.description = agent_data.get("description", existing.description)
+            # 仅在用户未配置时补齐默认 config
+            if agent_data.get("config") and (not existing.config):
+                existing.config = agent_data.get("config")
 
     db.commit()
     db.close()
@@ -648,8 +657,12 @@ def build_scheduler() -> AgentScheduler:
                 logger.info(f"Agent {cfg.name} 未设置调度计划，跳过")
                 continue
 
-            agent_instance = agent_cls()
-            sched.register(agent_instance, schedule=cfg.schedule)
+            agent_kwargs = cfg.config or {}
+            try:
+                agent_instance = agent_cls(**agent_kwargs) if agent_kwargs else agent_cls()
+            except TypeError:
+                agent_instance = agent_cls()
+            sched.register(agent_instance, schedule=cfg.schedule, execution_mode=cfg.execution_mode or "batch")
     finally:
         db.close()
 
@@ -686,6 +699,7 @@ def get_agent_config(agent_name: str) -> dict:
 
 async def trigger_agent(agent_name: str) -> str:
     """手动触发 Agent 执行（根据执行模式处理）"""
+    start = time.monotonic()
     agent_cls = AGENT_REGISTRY.get(agent_name)
     if not agent_cls:
         raise ValueError(f"Agent {agent_name} 未注册实际实现")
@@ -708,18 +722,40 @@ async def trigger_agent(agent_name: str) -> str:
     else:
         agent = agent_cls()
 
-    if execution_mode == "single" and hasattr(agent, "run_single"):
-        # 单只模式：逐只股票分析
-        results = []
-        for stock in watchlist:
-            result = await agent.run_single(context, stock.symbol)
-            if result:
-                results.append(f"{stock.name}: {result.content[:100]}...")
-        return "\n\n".join(results) if results else "无异动"
-    else:
-        # 批量模式：所有股票一起分析
-        result = await agent.run(context)
-        return result.content
+    try:
+        if execution_mode == "single" and hasattr(agent, "run_single"):
+            # 单只模式：逐只股票分析
+            results = []
+            for stock in watchlist:
+                result = await agent.run_single(context, stock.symbol)
+                if result:
+                    results.append(f"{stock.name}: {result.content[:100]}...")
+            msg = "\n\n".join(results) if results else "无异动"
+            record_agent_run(
+                agent_name=agent_name,
+                status="success",
+                result=msg,
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+            return msg
+        else:
+            # 批量模式：所有股票一起分析
+            result = await agent.run(context)
+            record_agent_run(
+                agent_name=agent_name,
+                status="success",
+                result=result.content,
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+            return result.content
+    except Exception as e:
+        record_agent_run(
+            agent_name=agent_name,
+            status="failed",
+            error=str(e),
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+        raise
 
 
 async def trigger_agent_for_stock(
@@ -729,6 +765,7 @@ async def trigger_agent_for_stock(
     bypass_throttle: bool = False,
 ) -> dict:
     """手动触发 Agent 执行（单只股票）"""
+    start = time.monotonic()
     agent_cls = AGENT_REGISTRY.get(agent_name)
     if not agent_cls:
         raise ValueError(f"Agent {agent_name} 未注册实际实现")
@@ -773,7 +810,22 @@ async def trigger_agent_for_stock(
     else:
         agent = agent_cls()
 
-    result = await agent.run(context)
+    try:
+        result = await agent.run(context)
+        record_agent_run(
+            agent_name=agent_name,
+            status="success",
+            result=result.content,
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+    except Exception as e:
+        record_agent_run(
+            agent_name=agent_name,
+            status="failed",
+            error=str(e),
+            duration_ms=int((time.monotonic() - start) * 1000),
+        )
+        raise
 
     # 返回详细结果
     return {

@@ -175,8 +175,12 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
     from src.collectors.kline_collector import KlineCollector
     from src.models.market import MarketCode, MARKETS
     from src.agents.intraday_monitor import IntradayMonitorAgent
+    from src.core.analysis_history import get_latest_analysis, get_analysis
+    from src.core.suggestion_pool import save_suggestion
 
     agent_name = "intraday_monitor"
+    agent_cfg = db.query(AgentConfig).filter(AgentConfig.name == agent_name).first()
+    agent_kwargs = agent_cfg.config if agent_cfg and agent_cfg.config else {}
 
     # 只获取关联了盘中监测 Agent 的股票
     watchlist = load_watchlist_for_agent(agent_name)
@@ -219,6 +223,29 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
         except Exception as e:
             logger.error(f"采集 {market_code.value} 行情失败: {e}")
 
+    quote_by_symbol = {q.symbol: q for q in all_quotes}
+
+    # 解析 Agent 阈值配置（用于异动标记与提示 AI）
+    try:
+        monitor_agent = IntradayMonitorAgent(bypass_throttle=True, **agent_kwargs)
+    except TypeError:
+        # 兼容旧配置（字段不匹配时回退）
+        monitor_agent = IntradayMonitorAgent(bypass_throttle=True)
+
+    # 获取历史分析（给 AI 作为上下文）
+    try:
+        daily_analysis = get_latest_analysis(
+            agent_name="daily_report",
+            stock_symbol="*",
+        )
+        premarket_analysis = get_analysis(
+            agent_name="premarket_outlook",
+            stock_symbol="*",
+        )
+    except Exception:
+        daily_analysis = None
+        premarket_analysis = None
+
     # 构建返回数据
     results = []
     for quote in all_quotes:
@@ -244,7 +271,7 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
 
         # 判断异动类型
         alert_type = None
-        if abs(change_pct) >= 3.0:
+        if abs(change_pct) >= getattr(monitor_agent, "price_alert_threshold", 3.0):
             alert_type = "急涨" if change_pct > 0 else "急跌"
 
         results.append({
@@ -253,9 +280,11 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
             "market": market.value,
             "current_price": quote.current_price,
             "change_pct": change_pct,
+            "change_amount": quote.change_amount,
             "open_price": quote.open_price,
             "high_price": quote.high_price,
             "low_price": quote.low_price,
+            "prev_close": quote.prev_close,
             "volume": quote.volume,
             "turnover": quote.turnover,
             "alert_type": alert_type,
@@ -271,31 +300,20 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
     if analyze and results:
         try:
             context = build_context(agent_name)
-            agent = IntradayMonitorAgent(bypass_throttle=True)
+            agent = monitor_agent
 
             for item in results:
                 try:
-                    # 构建完整的数据上下文
-                    from src.models.market import StockData
-                    stock_data = StockData(
-                        symbol=item["symbol"],
-                        name=item["name"],
-                        market=MarketCode(item["market"]),
-                        current_price=item["current_price"],
-                        change_pct=item["change_pct"],
-                        change_amount=0,
-                        volume=item["volume"] or 0,
-                        turnover=item["turnover"] or 0,
-                        open_price=item["open_price"] or 0,
-                        high_price=item["high_price"] or 0,
-                        low_price=item["low_price"] or 0,
-                        prev_close=0,
-                    )
+                    stock_data = quote_by_symbol.get(item["symbol"])
+                    if not stock_data:
+                        continue
 
                     data = {
                         "stock_data": stock_data,
                         "stocks": [stock_data],
                         "kline_summary": item["kline"],
+                        "daily_analysis": daily_analysis.content if daily_analysis else None,
+                        "premarket_analysis": premarket_analysis.content if premarket_analysis else None,
                     }
 
                     system_prompt, user_content = agent.build_prompt(data, context)
@@ -306,6 +324,21 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
                     suggestion["raw"] = response.strip()[:200]
 
                     item["suggestion"] = suggestion
+                    # 写入建议池（用于持仓页展示），避免频繁扫描导致“持有/观望”覆盖太久
+                    expires_hours = 4 if suggestion.get("should_alert", True) else 1
+                    save_suggestion(
+                        stock_symbol=item["symbol"],
+                        stock_name=item["name"] or "",
+                        action=suggestion.get("action", "watch"),
+                        action_label=suggestion.get("action_label", "观望"),
+                        signal=suggestion.get("signal", ""),
+                        reason=suggestion.get("reason", ""),
+                        agent_name=agent_name,
+                        agent_label=agent.display_name,
+                        expires_hours=expires_hours,
+                        prompt_context=user_content,
+                        ai_response=response,
+                    )
 
                 except Exception as e:
                     item["suggestion"] = {

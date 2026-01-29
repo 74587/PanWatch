@@ -50,14 +50,30 @@ class IntradayMonitorAgent(BaseAgent):
     display_name = "盘中监测"
     description = "交易时段实时监控持仓，AI 判断是否有值得关注的信号"
 
-    def __init__(self, throttle_minutes: int = 30, bypass_throttle: bool = False):
+    def __init__(
+        self,
+        throttle_minutes: int = 30,
+        bypass_throttle: bool = False,
+        price_alert_threshold: float = 3.0,
+        volume_alert_ratio: float = 2.0,
+        stop_loss_warning: float = -5.0,
+        take_profit_warning: float = 10.0,
+    ):
         """
         Args:
             throttle_minutes: 同一股票通知间隔（分钟）
             bypass_throttle: 是否跳过节流（测试用）
+            price_alert_threshold: 涨跌幅超过阈值视为价格异动（%）
+            volume_alert_ratio: 量比超过阈值视为放量异动
+            stop_loss_warning: 浮亏超过阈值触发止损预警（%）
+            take_profit_warning: 浮盈超过阈值触发止盈提醒（%）
         """
         self.throttle_minutes = throttle_minutes
         self.bypass_throttle = bypass_throttle
+        self.price_alert_threshold = price_alert_threshold
+        self.volume_alert_ratio = volume_alert_ratio
+        self.stop_loss_warning = stop_loss_warning
+        self.take_profit_warning = take_profit_warning
 
     async def collect(self, context: AgentContext) -> dict:
         """采集实时行情 + K线 + 历史分析"""
@@ -168,6 +184,15 @@ class IntradayMonitorAgent(BaseAgent):
         if turnover > 0:
             lines.append(f"- 成交额：{turnover / 10000:.0f} 万")
 
+        # 系统阈值（帮助 AI 做出更稳定的“提醒/不提醒”判断）
+        lines.append("\n## 系统阈值")
+        lines.append(f"- 价格异动：|涨跌幅| ≥ {self.price_alert_threshold:.1f}%")
+        lines.append(f"- 量能异动：量比 ≥ {self.volume_alert_ratio:.1f}")
+        lines.append(f"- 止损预警：浮亏 ≤ {self.stop_loss_warning:.1f}%")
+        lines.append(f"- 止盈提醒：浮盈 ≥ {self.take_profit_warning:.1f}%")
+        price_hit = "触发" if abs(change_pct) >= self.price_alert_threshold else "未触发"
+        lines.append(f"- 当前涨跌幅：{change_pct:+.2f}%（{price_hit}）")
+
         # K 线和技术指标
         kline = data.get("kline_summary")
         if kline and not kline.get("error"):
@@ -210,6 +235,9 @@ class IntradayMonitorAgent(BaseAgent):
                 if volume_ratio:
                     vol_info += f"（量比={volume_ratio:.2f}）"
                 lines.append(f"- {vol_info}")
+                if volume_ratio:
+                    vol_hit = "触发" if volume_ratio >= self.volume_alert_ratio else "未触发"
+                    lines.append(f"- 量比阈值判断：{vol_hit}")
 
             # 均线
             lines.append(f"- MA5：{format_num(kline.get('ma5'))} | MA10：{format_num(kline.get('ma10'))} | MA20：{format_num(kline.get('ma20'))} | MA60：{format_num(kline.get('ma60'))}")
@@ -263,7 +291,12 @@ class IntradayMonitorAgent(BaseAgent):
                 lines.append(f"- 成本价：{cost_price:.2f}")
                 lines.append(f"- 持仓量：{pos.quantity} 股")
                 lines.append(f"- 持仓市值：{market_value:.0f} 元")
-                lines.append(f"- 浮动盈亏：{pnl_pct:+.1f}%")
+                pnl_note = ""
+                if pnl_pct <= self.stop_loss_warning:
+                    pnl_note = "（触发止损预警）"
+                elif pnl_pct >= self.take_profit_warning:
+                    pnl_note = "（触发止盈提醒）"
+                lines.append(f"- 浮动盈亏：{pnl_pct:+.1f}%{pnl_note}")
                 lines.append(f"- 账户可用：{acc_funds:.0f} 元")
         else:
             lines.append("\n## 未持仓（仅关注）")
@@ -310,7 +343,7 @@ class IntradayMonitorAgent(BaseAgent):
             "action_label": "观望",
             "signal": "",
             "reason": "",
-            "should_alert": True,
+            "should_alert": False,
         }
 
         # 检查是否无需提醒
@@ -380,6 +413,8 @@ class IntradayMonitorAgent(BaseAgent):
             if not clean_content.startswith("[无需提醒]"):
                 result["reason"] = clean_content[:100]
 
+        # 最终 should_alert 判定：只在明确“建仓/加仓/减仓/清仓”时提醒
+        result["should_alert"] = result["action"] in {"buy", "add", "reduce", "sell"}
         return result
 
     async def analyze(self, context: AgentContext, data: dict) -> AnalysisResult:
@@ -561,12 +596,21 @@ class IntradayMonitorAgent(BaseAgent):
             result = await self.analyze(context, data)
 
             if await self.should_notify(result):
-                await context.notifier.notify(
+                notify_result = await context.notifier.notify_with_result(
                     result.title,
                     result.content,
                     result.images,
                 )
-                logger.info(f"Agent [{self.display_name}] 通知已发送: {stock_symbol}")
+                notified = bool(notify_result.get("success"))
+                result.raw_data["notified"] = notified
+                if notified:
+                    logger.info(f"Agent [{self.display_name}] 通知已发送: {stock_symbol}")
+                else:
+                    notify_error = notify_result.get("error") or "未知错误"
+                    result.raw_data["notify_error"] = notify_error
+                    logger.error(f"Agent [{self.display_name}] 通知发送失败: {stock_symbol} - {notify_error}")
+            else:
+                result.raw_data["notified"] = False
 
             return result
         finally:

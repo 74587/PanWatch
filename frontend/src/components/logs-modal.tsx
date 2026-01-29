@@ -121,7 +121,7 @@ export default function LogsModal({ open, onOpenChange }: { open: boolean, onOpe
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[90vw] max-w-[90vw] h-[90vh] max-h-[90vh]" onInteractOutside={(e) => e.preventDefault()}>
+      <DialogContent className="w-[90vw] max-w-[90vw] h-[90vh] max-h-[90vh] flex flex-col overflow-hidden" onInteractOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <span>日志</span>
@@ -195,21 +195,22 @@ export default function LogsModal({ open, onOpenChange }: { open: boolean, onOpe
         </div>
 
         {/* Log list */}
-        {!loadedOnce && loading ? (
-          <div className="flex items-center justify-center py-20">
-            <span className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
-          </div>
-        ) : logs.length === 0 ? (
-          <div className="card flex flex-col items-center justify-center py-20">
-            <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
-              <ScrollText className="w-6 h-6 text-primary" />
+        <div className="flex-1 min-h-0">
+          {!loadedOnce && loading ? (
+            <div className="flex items-center justify-center py-20">
+              <span className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
             </div>
-            <p className="text-[15px] font-semibold text-foreground">暂无日志</p>
-            <p className="text-[13px] text-muted-foreground mt-1.5">后台运行后日志会自动出现在这里</p>
-          </div>
-        ) : (
-          <div className="card overflow-hidden">
-            <div className="overflow-x-auto max-h-[calc(90vh-220px)] overflow-y-auto relative">
+          ) : logs.length === 0 ? (
+            <div className="card flex flex-col items-center justify-center py-20">
+              <div className="w-14 h-14 rounded-xl bg-primary/10 flex items-center justify-center mb-4">
+                <ScrollText className="w-6 h-6 text-primary" />
+              </div>
+              <p className="text-[15px] font-semibold text-foreground">暂无日志</p>
+              <p className="text-[13px] text-muted-foreground mt-1.5">后台运行后日志会自动出现在这里</p>
+            </div>
+          ) : (
+            <div className="card overflow-hidden h-full flex flex-col">
+              <div className="overflow-x-auto overflow-y-auto flex-1 min-h-0 relative scrollbar">
               <table className="w-full text-[12px] font-mono">
                 <thead className="sticky top-0 bg-card z-10 border-b border-border/50">
                   <tr>
@@ -254,7 +255,8 @@ export default function LogsModal({ open, onOpenChange }: { open: boolean, onOpe
               </div>
             )}
           </div>
-        )}
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   )

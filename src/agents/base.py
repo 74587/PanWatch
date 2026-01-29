@@ -190,13 +190,18 @@ class BaseAgent(ABC):
 
             notified = False
             if await self.should_notify(result):
-                await context.notifier.notify(
+                notify_result = await context.notifier.notify_with_result(
                     result.title,
                     result.content,
                     result.images,
                 )
-                notified = True
-                logger.info(f"Agent [{self.display_name}] 通知已发送")
+                notified = bool(notify_result.get("success"))
+                if notified:
+                    logger.info(f"Agent [{self.display_name}] 通知已发送")
+                else:
+                    notify_error = notify_result.get("error") or "未知错误"
+                    logger.error(f"Agent [{self.display_name}] 通知发送失败: {notify_error}")
+                    result.raw_data["notify_error"] = notify_error
             else:
                 logger.info(f"Agent [{self.display_name}] 无需通知")
 

@@ -361,6 +361,7 @@ export default function StocksPage() {
   const [editPositionId, setEditPositionId] = useState<number | null>(null)
   const [positionDialogAccountId, setPositionDialogAccountId] = useState<number | null>(null)
   const [positionSearchQuery, setPositionSearchQuery] = useState('')
+  const [positionSearchMarket, setPositionSearchMarket] = useState('')  // 搜索市场筛选
   const [positionSearchResults, setPositionSearchResults] = useState<SearchResult[]>([])
   const [positionSearching, setPositionSearching] = useState(false)
   const [showPositionDropdown, setShowPositionDropdown] = useState(false)
@@ -798,11 +799,12 @@ export default function StocksPage() {
     setPositionDialogOpen(true)
   }
 
-  const doPositionSearch = async (q: string) => {
+  const doPositionSearch = async (q: string, market: string = positionSearchMarket) => {
     if (q.length < 1) { setPositionSearchResults([]); setShowPositionDropdown(false); return }
     setPositionSearching(true)
     try {
-      const results = await fetchAPI<SearchResult[]>(`/stocks/search?q=${encodeURIComponent(q)}`)
+      const marketParam = market ? `&market=${market}` : ''
+      const results = await fetchAPI<SearchResult[]>(`/stocks/search?q=${encodeURIComponent(q)}${marketParam}`)
       setPositionSearchResults(results)
       setShowPositionDropdown(results.length > 0)
     } catch { setPositionSearchResults([]) }
@@ -813,6 +815,13 @@ export default function StocksPage() {
     setPositionSearchQuery(value)
     clearTimeout(positionSearchTimer.current)
     positionSearchTimer.current = setTimeout(() => doPositionSearch(value), 500)
+  }
+
+  const handlePositionSearchMarketChange = (market: string) => {
+    setPositionSearchMarket(market)
+    if (positionSearchQuery) {
+      doPositionSearch(positionSearchQuery, market)
+    }
   }
 
   const selectPositionStock = (item: SearchResult) => {
@@ -1343,7 +1352,7 @@ export default function StocksPage() {
                 {searching && <span className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />}
               </div>
               {showDropdown && (
-                <div className="absolute z-50 w-full mt-2 max-h-64 overflow-auto card shadow-lg">
+                <div className="absolute z-50 w-full mt-2 max-h-64 overflow-auto scrollbar card shadow-lg">
                   {searchResults.map(item => (
                     <button
                       key={`${item.market}-${item.symbol}`}
@@ -1822,7 +1831,18 @@ export default function StocksPage() {
       </Dialog>
 
       {/* Position Dialog */}
-      <Dialog open={positionDialogOpen} onOpenChange={setPositionDialogOpen}>
+      <Dialog
+        open={positionDialogOpen}
+        onOpenChange={(open) => {
+          setPositionDialogOpen(open)
+          if (!open) {
+            setPositionSearchQuery('')
+            setPositionSearchResults([])
+            setShowPositionDropdown(false)
+            setPositionSearchMarket('')
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{editPositionId ? '编辑持仓' : '添加持仓'}</DialogTitle>
@@ -1841,20 +1861,43 @@ export default function StocksPage() {
               </div>
             ) : (
               <div>
-                <Label>搜索股票</Label>
+                <div className="flex items-center gap-2 mb-2">
+                  <Label className="mb-0">搜索股票</Label>
+                  <div className="flex items-center gap-1">
+                    {[
+                      { value: '', label: '全部' },
+                      { value: 'CN', label: 'A股' },
+                      { value: 'HK', label: '港股' },
+                      { value: 'US', label: '美股' },
+                    ].map(opt => (
+                      <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => handlePositionSearchMarketChange(opt.value)}
+                        className={`text-[11px] px-2 py-0.5 rounded transition-colors ${
+                          positionSearchMarket === opt.value
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-accent/50 text-muted-foreground hover:bg-accent'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <div className="relative" ref={positionDropdownRef}>
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground/50" />
                   <Input
                     value={positionSearchQuery}
                     onChange={e => handlePositionSearchInput(e.target.value)}
                     onFocus={() => positionSearchResults.length > 0 && setShowPositionDropdown(true)}
-                    placeholder="输入代码或名称搜索..."
+                    placeholder={positionSearchMarket === 'HK' ? '代码或名称，如 00700 或 腾讯' : positionSearchMarket === 'US' ? '代码或名称，如 LI 或 理想汽车' : positionSearchMarket === 'CN' ? '代码或名称，如 600519 或 茅台' : '代码或名称，如 600519 / 00700 / AAPL'}
                     className="pl-9"
                     autoComplete="off"
                   />
                   {positionSearching && <span className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />}
                   {showPositionDropdown && positionSearchResults.length > 0 && (
-                    <div className="absolute z-50 w-full mt-1 max-h-48 overflow-auto card shadow-lg">
+                    <div className="absolute z-50 w-full mt-1 max-h-48 overflow-auto scrollbar card shadow-lg">
                       {positionSearchResults.map(item => (
                         <button
                           key={`${item.market}-${item.symbol}`}

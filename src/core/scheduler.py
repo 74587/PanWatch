@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Callable, Awaitable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -6,6 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from src.agents.base import BaseAgent, AgentContext
+from src.core.agent_runs import record_agent_run
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +18,7 @@ class AgentScheduler:
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
         self.agents: dict[str, BaseAgent] = {}
+        self.execution_modes: dict[str, str] = {}
         # 改为存储 context 构建函数，而非固定 context
         self.context_builder: Callable[[str], AgentContext] | None = None
 
@@ -23,7 +26,7 @@ class AgentScheduler:
         """设置 context 构建函数（每次执行时动态构建）"""
         self.context_builder = builder
 
-    def register(self, agent: BaseAgent, schedule: str):
+    def register(self, agent: BaseAgent, schedule: str, execution_mode: str = "batch"):
         """
         注册 Agent 到调度器。
 
@@ -32,8 +35,10 @@ class AgentScheduler:
             schedule: 调度表达式
                 - cron 格式: "分 时 日 月 周" (5 部分)
                 - interval 格式: "interval:3m" 或 "interval:30s"
+            execution_mode: 执行模式 batch/single（single 将逐只股票执行 run_single）
         """
         self.agents[agent.name] = agent
+        self.execution_modes[agent.name] = execution_mode or "batch"
 
         # 解析调度表达式
         if schedule.startswith("interval:"):
@@ -97,14 +102,50 @@ class AgentScheduler:
             logger.error(f"Agent 未找到: {agent_name}")
             return
 
+        start = time.monotonic()
         try:
             # 每次执行时动态构建 context（获取最新配置）
             context = self.context_builder(agent_name)
             logger.info(f"[调度] 开始执行 Agent: {agent.display_name}")
-            await agent.run(context)
+            mode = self.execution_modes.get(agent_name, "batch")
+            if mode == "single" and hasattr(agent, "run_single"):
+                processed = 0
+                errors: list[str] = []
+                for stock in list(context.watchlist):
+                    try:
+                        await agent.run_single(context, stock.symbol)  # type: ignore[attr-defined]
+                        processed += 1
+                    except Exception as e:
+                        logger.error(f"Agent [{agent_name}] 单只执行失败 {stock.symbol}: {e}", exc_info=True)
+                        errors.append(f"{stock.symbol}: {e}")
+                logger.info(f"[调度] Agent 单只模式执行完成: {agent.display_name}（{processed}/{len(context.watchlist)}）")
+                duration_ms = int((time.monotonic() - start) * 1000)
+                record_agent_run(
+                    agent_name=agent_name,
+                    status="failed" if errors else "success",
+                    result=f"single mode processed {processed}/{len(context.watchlist)}",
+                    error="; ".join(errors),
+                    duration_ms=duration_ms,
+                )
+            else:
+                result = await agent.run(context)
+                duration_ms = int((time.monotonic() - start) * 1000)
+                record_agent_run(
+                    agent_name=agent_name,
+                    status="success",
+                    result=(result.content or "")[:2000],
+                    duration_ms=duration_ms,
+                )
             logger.info(f"[调度] Agent 执行完成: {agent.display_name}")
         except Exception as e:
             logger.error(f"Agent [{agent_name}] 调度执行异常: {e}", exc_info=True)
+            duration_ms = int((time.monotonic() - start) * 1000)
+            record_agent_run(
+                agent_name=agent_name,
+                status="failed",
+                error=str(e),
+                duration_ms=duration_ms,
+            )
 
     async def trigger_now(self, agent_name: str):
         """立即执行某个 Agent（手动触发）"""

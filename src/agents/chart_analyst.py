@@ -180,12 +180,21 @@ class ChartAnalystAgent(BaseAgent):
             result = await self.analyze(context, data)
 
             if await self.should_notify(result):
-                await context.notifier.notify(
+                notify_result = await context.notifier.notify_with_result(
                     result.title,
                     result.content,
                     result.images,
                 )
-                logger.info(f"Agent [{self.display_name}] 通知已发送: {stock_symbol}")
+                notified = bool(notify_result.get("success"))
+                result.raw_data["notified"] = notified
+                if notified:
+                    logger.info(f"Agent [{self.display_name}] 通知已发送: {stock_symbol}")
+                else:
+                    notify_error = notify_result.get("error") or "未知错误"
+                    result.raw_data["notify_error"] = notify_error
+                    logger.error(f"Agent [{self.display_name}] 通知发送失败: {stock_symbol} - {notify_error}")
+            else:
+                result.raw_data["notified"] = False
 
             return result
         finally:

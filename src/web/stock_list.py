@@ -372,7 +372,7 @@ def _realtime_search(query: str, market: str = "", limit: int = 20) -> list[dict
 
         # 只保留股票（排除债券等）
         type_us = item.get("TypeUS", "")
-        if stock_market == "US" and type_us not in ("1", "2"):  # 1=普通股, 2=ADR
+        if stock_market == "US" and type_us and type_us not in ("1", "2", "3"):  # 1=普通股, 3=ADR/ADS 等；5=ETF 等
             continue
 
         code = item.get("Code", "")
@@ -398,12 +398,26 @@ def search_stocks(query: str, market: str = "", limit: int = 20) -> list[dict]:
 
     # 尝试实时搜索
     results = _realtime_search(q, market, limit)
-    if results:
-        return results
+    if len(results) >= limit:
+        return results[:limit]
 
-    # 回退到缓存搜索
-    logger.info("实时搜索无结果，使用缓存搜索")
-    return _cached_search(q, market, limit)
+    # 实时搜索结果不足时，用缓存补全（便于聚合多市场搜索结果）
+    cached = _cached_search(q, market, limit)
+    if not results:
+        if cached:
+            logger.info("实时搜索无结果，使用缓存搜索")
+        return cached
+
+    seen = {(r.get("market"), r.get("symbol")) for r in results}
+    for r in cached:
+        key = (r.get("market"), r.get("symbol"))
+        if key in seen:
+            continue
+        results.append(r)
+        seen.add(key)
+        if len(results) >= limit:
+            break
+    return results
 
 
 def _cached_search(query: str, market: str = "", limit: int = 20) -> list[dict]:

@@ -272,9 +272,10 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
         # 限制并发数
         semaphore = asyncio.Semaphore(5)
 
-        async def fetch_with_limit(client, symbol, stock_name, since):
+        async def fetch_with_limit(client, symbol, stock_name):
             async with semaphore:
-                return await self._fetch_for_symbol(client, symbol, stock_name, since)
+                # 缓存维度不包含 since，为避免“空结果污染缓存”，这里不做时间过滤
+                return await self._fetch_for_symbol(client, symbol, stock_name, None)
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -283,7 +284,7 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
         }
         async with httpx.AsyncClient(timeout=8, verify=False, headers=headers) as client:
             tasks = [
-                fetch_with_limit(client, symbol, symbol_names.get(symbol, symbol), since)
+                fetch_with_limit(client, symbol, symbol_names.get(symbol, symbol))
                 for symbol in symbols
                 if symbol in symbol_names  # 只查询有名称的股票
             ]
@@ -305,6 +306,8 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
         # 缓存结果
         _set_cached(cache_key, unique_news)
         logger.info(f"东方财富个股新闻采集到 {len(unique_news)} 条")
+        if since:
+            return [n for n in unique_news if n.publish_time >= since]
         return unique_news
 
     async def _fetch_for_symbol(self, client: httpx.AsyncClient, symbol: str, stock_name: str, since: datetime | None) -> list[NewsItem]:
@@ -382,6 +385,10 @@ class EastMoneyStockNewsCollector(BaseNewsCollector):
 
         content = item.get("content", "") or ""
         url = item.get("url", "")
+
+        # 清理 HTML（搜索结果可能包含 <em> 等高亮标签）
+        title = re.sub(r"<[^>]+>", "", title).strip()
+        content = re.sub(r"<[^>]+>", "", content).strip()
 
         # 解析时间: "2026-01-20 17:19:17"
         date_str = item.get("date", "")
@@ -482,15 +489,15 @@ class EastMoneyNewsCollector(BaseNewsCollector):
                     if news:
                         # 设置所有关联的股票代码
                         news.symbols = stock_codes
-                        if since and news.publish_time < since:
-                            continue
                         result.append(news)
                 except Exception as e:
                     logger.debug(f"解析东方财富公告失败: {e}")
 
-            # 缓存结果
+            # 缓存结果（缓存维度不包含 since，避免“空结果污染缓存”）
             _set_cached(cache_key, result)
             logger.info(f"东方财富公告采集到 {len(result)} 条")
+            if since:
+                return [n for n in result if n.publish_time >= since]
             return result
 
         except Exception as e:
