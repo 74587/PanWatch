@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3 } from 'lucide-react'
 import { fetchAPI, useLocalStorage, type AIService, type NotifyChannel } from '@/lib/utils'
@@ -1042,6 +1042,14 @@ export default function StocksPage() {
     return { suggestion: null, kline: null }
   }
 
+  const positionRatio = useMemo(() => {
+    if (!portfolio) return null
+    const mv = portfolio.total.total_market_value || 0
+    const assets = portfolio.total.total_assets || 0
+    const pct = assets > 0 ? (mv / assets * 100) : 0
+    return { mv, assets, pct }
+  }, [portfolio])
+
   const toggleAccountExpanded = (id: number) => {
     setExpandedAccounts(prev => {
       const next = new Set(prev)
@@ -1253,7 +1261,7 @@ export default function StocksPage() {
           ))}
         </div>
       ) : portfolio ? (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
           <div className="card p-4">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
               <TrendingUp className="w-4 h-4" />
@@ -1279,6 +1287,39 @@ export default function StocksPage() {
               </span>
             </div>
           </div>
+
+          {(() => {
+            let dayPnl = 0
+            let prevMv = 0
+            const allPos = (portfolio.accounts || []).flatMap(a => a.positions || [])
+            for (const p of allPos) {
+              if (p.current_price_cny == null || p.change_pct == null) continue
+              const prev = p.change_pct === -100 ? null : (p.current_price_cny / (1 + p.change_pct / 100))
+              if (prev == null || !isFinite(prev)) continue
+              const qty = p.quantity || 0
+              dayPnl += (p.current_price_cny - prev) * qty
+              prevMv += prev * qty
+            }
+            const pct = prevMv > 0 ? (dayPnl / prevMv * 100) : 0
+            const isUp = dayPnl >= 0
+            return (
+              <div className="card p-4">
+                <div className="flex items-center gap-2 text-muted-foreground mb-1">
+                  {isUp ? (
+                    <ArrowUpRight className="w-4 h-4 text-rose-500" />
+                  ) : (
+                    <ArrowDownRight className="w-4 h-4 text-emerald-500" />
+                  )}
+                  <span className="text-[12px]">今日盈亏</span>
+                </div>
+                <div className={`text-[20px] font-bold font-mono ${isUp ? 'text-rose-500' : 'text-emerald-500'}`}>
+                  {isUp ? '+' : ''}{formatMoney(dayPnl)}
+                  <span className="text-[13px] ml-1.5">({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
+                </div>
+              </div>
+            )
+          })()}
+
           <div className="card p-4">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
               <Wallet className="w-4 h-4" />
@@ -1295,6 +1336,19 @@ export default function StocksPage() {
             </div>
             <div className="text-[20px] font-bold text-foreground font-mono">
               {formatMoney(portfolio.total.total_assets)}
+            </div>
+          </div>
+
+          <div className="card p-4">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <Bell className="w-4 h-4" />
+              <span className="text-[12px]">仓位占比</span>
+            </div>
+            <div className="text-[20px] font-bold text-foreground font-mono">
+              {positionRatio ? `${positionRatio.pct.toFixed(1)}%` : '--'}
+            </div>
+            <div className="mt-1 text-[11px] text-muted-foreground line-clamp-1">
+              {positionRatio ? `持仓市值 ${formatMoney(positionRatio.mv)} / 总资产 ${formatMoney(positionRatio.assets)}` : '—'}
             </div>
           </div>
         </div>

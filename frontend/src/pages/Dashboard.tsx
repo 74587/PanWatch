@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import {
@@ -128,6 +128,8 @@ interface QuoteResponse {
   change_pct: number | null
 }
 
+type QuoteMap = Record<string, { current_price: number | null; change_pct: number | null }>
+
 interface AnalysisRecord {
   id: number
   agent_name: string
@@ -142,7 +144,7 @@ const round2 = (value: number) => Math.round(value * 100) / 100
 
 const mergePortfolioQuotes = (
   portfolio: PortfolioSummary | null,
-  quotes: Record<string, { current_price: number | null; change_pct: number | null }>
+  quotes: QuoteMap
 ): PortfolioSummary | null => {
   if (!portfolio) return null
 
@@ -158,7 +160,7 @@ const mergePortfolioQuotes = (
     let accCost = 0
 
     for (const pos of account.positions) {
-      const quote = quotes[pos.symbol]
+      const quote = quotes[`${pos.market}:${pos.symbol}`]
       const current_price = quote?.current_price ?? pos.current_price ?? null
       const rate = pos.market === 'HK' ? hkdRate : pos.market === 'US' ? usdRate : 1
       const cost = pos.cost_price * pos.quantity * rate
@@ -223,7 +225,8 @@ export default function DashboardPage() {
 
   // Watchlist
   const [stocks, setStocks] = useState<Stock[]>([])
-  const [quotes, setQuotes] = useState<Record<string, { current_price: number | null; change_pct: number | null }>>({})
+  // Keyed by `${market}:${symbol}` to avoid cross-market collisions
+  const [quotes, setQuotes] = useState<QuoteMap>({})
   const [quotesLoading, setQuotesLoading] = useState(false)
   const hasWatchlist = stocks.filter(s => s.enabled).length > 0
 
@@ -358,9 +361,9 @@ export default function DashboardPage() {
         method: 'POST',
         body: JSON.stringify({ items }),
       })
-      const map: Record<string, { current_price: number | null; change_pct: number | null }> = {}
+      const map: QuoteMap = {}
       for (const item of data) {
-        map[item.symbol] = {
+        map[`${item.market}:${item.symbol}`] = {
           current_price: item.current_price ?? null,
           change_pct: item.change_pct ?? null,
         }
@@ -481,6 +484,63 @@ export default function DashboardPage() {
     loadWatchlist()
   }
 
+  const portfolioDayPnl = useMemo(() => {
+    if (!portfolioRaw) return null
+    const hkdRate = portfolioRaw.exchange_rates?.HKD_CNY ?? 0.92
+    const usdRate = portfolioRaw.exchange_rates?.USD_CNY ?? 7.25
+
+    let dayPnl = 0
+    let prevMv = 0
+    let posCount = 0
+
+    for (const acc of portfolioRaw.accounts || []) {
+      for (const p of acc.positions || []) {
+        const q = quotes[`${p.market}:${p.symbol}`]
+        if (!q || q.current_price == null || q.change_pct == null) continue
+        const prev = q.change_pct === -100 ? null : (q.current_price / (1 + q.change_pct / 100))
+        if (prev == null || !isFinite(prev)) continue
+        const fx = p.market === 'HK' ? hkdRate : p.market === 'US' ? usdRate : 1
+        const qty = p.quantity || 0
+        posCount += 1
+        dayPnl += (q.current_price - prev) * qty * fx
+        prevMv += prev * qty * fx
+      }
+    }
+
+    return {
+      day_pnl: dayPnl,
+      day_pnl_pct: prevMv > 0 ? (dayPnl / prevMv * 100) : 0,
+      has_data: posCount > 0,
+    }
+  }, [portfolioRaw, quotes])
+
+  const dayMovers = useMemo(() => {
+    if (!portfolioRaw) return { worst: null as null | { market: string; symbol: string; name: string; day_pnl: number; day_pct: number }, best: null as null | { market: string; symbol: string; name: string; day_pnl: number; day_pct: number } }
+    const hkdRate = portfolioRaw.exchange_rates?.HKD_CNY ?? 0.92
+    const usdRate = portfolioRaw.exchange_rates?.USD_CNY ?? 7.25
+
+    const rows: Array<{ market: string; symbol: string; name: string; day_pnl: number; day_pct: number }> = []
+    for (const acc of portfolioRaw.accounts || []) {
+      for (const p of acc.positions || []) {
+        const q = quotes[`${p.market}:${p.symbol}`]
+        if (!q || q.current_price == null || q.change_pct == null) continue
+        const prev = q.change_pct === -100 ? null : (q.current_price / (1 + q.change_pct / 100))
+        if (prev == null || !isFinite(prev)) continue
+        const fx = p.market === 'HK' ? hkdRate : p.market === 'US' ? usdRate : 1
+        const qty = p.quantity || 0
+        const pnl = (q.current_price - prev) * qty * fx
+        const prevMv = prev * qty * fx
+        const pct = prevMv > 0 ? (pnl / prevMv * 100) : 0
+        rows.push({ market: p.market, symbol: p.symbol, name: p.name, day_pnl: pnl, day_pct: pct })
+      }
+    }
+
+    if (rows.length === 0) return { worst: null, best: null }
+    const worst = rows.slice().sort((a, b) => a.day_pnl - b.day_pnl)[0]
+    const best = rows.slice().sort((a, b) => b.day_pnl - a.day_pnl)[0]
+    return { worst, best }
+  }, [portfolioRaw, quotes])
+
   return (
     <div>
       {/* Onboarding */}
@@ -499,6 +559,8 @@ export default function DashboardPage() {
         hasPosition={klineDialogHasPosition}
         initialSummary={klineDialogInitialSummary as any}
       />
+
+      {/* Risk dialog removed (was too noisy when empty) */}
 
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-6">
@@ -577,7 +639,7 @@ export default function DashboardPage() {
 
       {/* Portfolio Summary Cards */}
       {hasPortfolio && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
           <div className="card p-4">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
               <PiggyBank className="w-4 h-4" />
@@ -587,6 +649,7 @@ export default function DashboardPage() {
               {formatMoney(portfolio!.total.total_assets)}
             </div>
           </div>
+
           <div className="card p-4">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
               {portfolio!.total.total_pnl >= 0 ? (
@@ -603,6 +666,7 @@ export default function DashboardPage() {
               </span>
             </div>
           </div>
+
           <div className="card p-4">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
               <TrendingUp className="w-4 h-4" />
@@ -612,6 +676,7 @@ export default function DashboardPage() {
               {formatMoney(portfolio!.total.total_market_value)}
             </div>
           </div>
+
           <div className="card p-4">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
               <Wallet className="w-4 h-4" />
@@ -621,6 +686,49 @@ export default function DashboardPage() {
               {formatMoney(portfolio!.total.available_funds)}
             </div>
           </div>
+
+          <div className="card p-4">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              {(portfolioDayPnl?.day_pnl ?? 0) >= 0 ? (
+                <ArrowUpRight className="w-4 h-4 text-rose-500" />
+              ) : (
+                <ArrowDownRight className="w-4 h-4 text-emerald-500" />
+              )}
+              <span className="text-[12px]">今日盈亏</span>
+            </div>
+            <div className={`text-[20px] font-bold font-mono ${(portfolioDayPnl?.day_pnl ?? 0) >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+              {(portfolioDayPnl?.day_pnl ?? 0) >= 0 ? '+' : ''}{formatMoney(portfolioDayPnl?.day_pnl ?? 0)}
+              <span className="text-[13px] ml-1.5">({(portfolioDayPnl?.day_pnl_pct ?? 0) >= 0 ? '+' : ''}{(portfolioDayPnl?.day_pnl_pct ?? 0).toFixed(2)}%)</span>
+            </div>
+            {!portfolioDayPnl?.has_data && (
+              <div className="mt-1 text-[11px] text-muted-foreground">等待行情数据</div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            className="card p-4 text-left hover:bg-accent/10 transition-colors"
+            onClick={() => {
+              if (dayMovers.worst) navigate(`/stock/${encodeURIComponent(dayMovers.worst.market)}/${encodeURIComponent(dayMovers.worst.symbol)}`)
+            }}
+          >
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <Activity className="w-4 h-4" />
+              <span className="text-[12px]">今日最大拖累</span>
+            </div>
+            {dayMovers.worst ? (
+              <>
+                <div className="text-[14px] font-medium text-foreground truncate">{dayMovers.worst.name}</div>
+                <div className={`mt-1 text-[16px] font-bold font-mono ${dayMovers.worst.day_pnl >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                  {dayMovers.worst.day_pnl >= 0 ? '+' : ''}{formatMoney(dayMovers.worst.day_pnl)}
+                  <span className="text-[12px] ml-1.5">({dayMovers.worst.day_pct >= 0 ? '+' : ''}{dayMovers.worst.day_pct.toFixed(2)}%)</span>
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground">点击查看详情</div>
+              </>
+            ) : (
+              <div className="text-[12px] text-muted-foreground">等待行情数据</div>
+            )}
+          </button>
         </div>
       )}
 
@@ -1003,7 +1111,7 @@ export default function DashboardPage() {
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
             {stocks.filter(s => s.enabled).slice(0, 12).map(stock => {
-              const quote = quotes[stock.symbol]
+              const quote = quotes[`${stock.market}:${stock.symbol}`]
               const isUp = quote?.change_pct != null && quote.change_pct > 0
               const isDown = quote?.change_pct != null && quote.change_pct < 0
               const changeColor = isUp ? 'text-rose-500' : isDown ? 'text-emerald-500' : 'text-muted-foreground'
