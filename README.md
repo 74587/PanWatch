@@ -150,6 +150,20 @@ cd frontend && pnpm install && pnpm dev
 
 **前端**：React 18 / TypeScript / Tailwind CSS / shadcn/ui
 
+## 发布（Docker 镜像）
+
+本项目内置 GitHub Actions 发布流程：
+
+- 打 tag（例如 `0.2.3`）会自动构建并推送 Docker 镜像
+  - `sunxiao0721/panwatch:0.2.3`
+  - `sunxiao0721/panwatch:latest`
+- 也支持在 GitHub Actions 里手动触发（workflow_dispatch）指定版本号
+
+需要在仓库 Secrets 中配置：
+
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+
 ## 贡献
 
 欢迎提交 Issue 和 PR！自定义 Agent 和数据源开发请参考 [贡献指南](CONTRIBUTING.md)。
