@@ -287,7 +287,10 @@ export default function DataSourcesPage() {
 
       {/* Test Result Dialog */}
       <Dialog open={testResultOpen} onOpenChange={setTestResultOpen}>
-        <DialogContent className="max-w-2xl" onInteractOutside={(e) => e.preventDefault()}>
+        <DialogContent
+          className="max-w-2xl w-[92vw] max-h-[85vh] overflow-y-auto scrollbar"
+          onInteractOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               {testResult?.success ? (
@@ -303,7 +306,7 @@ export default function DataSourcesPage() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 mt-2">
+          <div className="space-y-4 mt-2 pr-1">
             {/* Summary */}
             <div className="flex items-center gap-4 p-3 rounded-lg bg-accent/30">
               <div className="flex-1">
