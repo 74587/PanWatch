@@ -83,6 +83,9 @@ ENV PYTHONUNBUFFERED=1
 ENV DATA_DIR=/app/data
 ENV DOCKER=1
 
+# 默认时区（可在 docker run 时用 -e TZ=... 覆盖）
+ENV TZ=Asia/Shanghai
+
 # 暴露端口
 EXPOSE 8000
 

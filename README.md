@@ -111,6 +111,7 @@ docker-compose up -d
 | `AUTH_PASSWORD` | 预设登录密码 | 首次访问时设置 |
 | `JWT_SECRET` | JWT 签名密钥 | 自动生成 |
 | `DATA_DIR` | 数据存储目录 | `./data` |
+| `TZ` | 应用时区（影响 Agent 调度触发时间与时间展示） | `Asia/Shanghai` |
 
 </details>
 

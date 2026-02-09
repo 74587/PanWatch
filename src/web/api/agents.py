@@ -7,6 +7,8 @@ from pydantic import BaseModel
 
 from src.web.database import get_db
 from src.web.models import AgentConfig, AgentRun
+from src.core.schedule_parser import preview_schedule
+from src.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +84,9 @@ def _agent_to_response(agent: AgentConfig) -> dict:
 
 
 @router.put("/{agent_name}", response_model=AgentConfigResponse)
-def update_agent(agent_name: str, update: AgentConfigUpdate, db: Session = Depends(get_db)):
+def update_agent(
+    agent_name: str, update: AgentConfigUpdate, db: Session = Depends(get_db)
+):
     agent = db.query(AgentConfig).filter(AgentConfig.name == agent_name).first()
     if not agent:
         raise HTTPException(404, f"Agent {agent_name} 不存在")
@@ -95,6 +99,30 @@ def update_agent(agent_name: str, update: AgentConfigUpdate, db: Session = Depen
     return _agent_to_response(agent)
 
 
+@router.get("/{agent_name}/schedule/preview")
+def preview_agent_schedule(
+    agent_name: str, count: int = 5, db: Session = Depends(get_db)
+):
+    """预览某个 Agent 接下来几次的触发时间（按调度时区）"""
+    tz = Settings().app_timezone or "UTC"
+    agent = db.query(AgentConfig).filter(AgentConfig.name == agent_name).first()
+    if not agent:
+        raise HTTPException(404, f"Agent {agent_name} 不存在")
+    if not agent.schedule:
+        return {"schedule": "", "timezone": tz, "next_runs": []}
+
+    try:
+        runs = preview_schedule(agent.schedule, count=count, timezone=tz)
+    except Exception as e:
+        raise HTTPException(400, f"schedule 无法解析: {e}")
+
+    return {
+        "schedule": agent.schedule,
+        "timezone": tz,
+        "next_runs": [r.isoformat() for r in runs],
+    }
+
+
 @router.delete("/{agent_name}")
 def delete_agent(agent_name: str, db: Session = Depends(get_db)):
     """删除 Agent 配置"""
@@ -104,6 +132,7 @@ def delete_agent(agent_name: str, db: Session = Depends(get_db)):
 
     # 删除关联的 stock_agents 记录
     from src.web.models import StockAgent
+
     db.query(StockAgent).filter(StockAgent.agent_name == agent_name).delete()
 
     db.delete(agent)
@@ -121,6 +150,7 @@ async def trigger_agent_endpoint(agent_name: str, db: Session = Depends(get_db))
         raise HTTPException(400, f"Agent {agent_name} 未启用")
 
     from server import trigger_agent
+
     try:
         result = await trigger_agent(agent_name)
         return {"ok": True, "message": result}
@@ -274,27 +304,29 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
         if abs(change_pct) >= getattr(monitor_agent, "price_alert_threshold", 3.0):
             alert_type = "急涨" if change_pct > 0 else "急跌"
 
-        results.append({
-            "symbol": quote.symbol,
-            "name": quote.name,
-            "market": market.value,
-            "current_price": quote.current_price,
-            "change_pct": change_pct,
-            "change_amount": quote.change_amount,
-            "open_price": quote.open_price,
-            "high_price": quote.high_price,
-            "low_price": quote.low_price,
-            "prev_close": quote.prev_close,
-            "volume": quote.volume,
-            "turnover": quote.turnover,
-            "alert_type": alert_type,
-            "has_position": has_position,
-            "cost_price": cost_price,
-            "pnl_pct": pnl_pct,
-            "trading_style": trading_style,
-            "kline": kline_summary,
-            "suggestion": None,  # AI 建议
-        })
+        results.append(
+            {
+                "symbol": quote.symbol,
+                "name": quote.name,
+                "market": market.value,
+                "current_price": quote.current_price,
+                "change_pct": change_pct,
+                "change_amount": quote.change_amount,
+                "open_price": quote.open_price,
+                "high_price": quote.high_price,
+                "low_price": quote.low_price,
+                "prev_close": quote.prev_close,
+                "volume": quote.volume,
+                "turnover": quote.turnover,
+                "alert_type": alert_type,
+                "has_position": has_position,
+                "cost_price": cost_price,
+                "pnl_pct": pnl_pct,
+                "trading_style": trading_style,
+                "kline": kline_summary,
+                "suggestion": None,  # AI 建议
+            }
+        )
 
     # AI 分析
     if analyze and results:
@@ -312,8 +344,12 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
                         "stock_data": stock_data,
                         "stocks": [stock_data],
                         "kline_summary": item["kline"],
-                        "daily_analysis": daily_analysis.content if daily_analysis else None,
-                        "premarket_analysis": premarket_analysis.content if premarket_analysis else None,
+                        "daily_analysis": daily_analysis.content
+                        if daily_analysis
+                        else None,
+                        "premarket_analysis": premarket_analysis.content
+                        if premarket_analysis
+                        else None,
                     }
 
                     system_prompt, user_content = agent.build_prompt(data, context)

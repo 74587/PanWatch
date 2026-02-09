@@ -22,6 +22,12 @@ interface AgentConfig {
   config: Record<string, unknown>
 }
 
+interface SchedulePreview {
+  schedule: string
+  timezone: string
+  next_runs: string[]
+}
+
 // 调度类型
 type ScheduleType = 'daily' | 'weekdays' | 'interval' | 'cron'
 
@@ -103,11 +109,30 @@ export default function AgentsPage() {
   const [loading, setLoading] = useState(true)
   const [triggering, setTriggering] = useState<string | null>(null)
 
+  const [previews, setPreviews] = useState<Record<string, SchedulePreview | { error: string }>>({})
+
   // 调度编辑弹窗
   const [scheduleDialogAgent, setScheduleDialogAgent] = useState<AgentConfig | null>(null)
   const [scheduleConfig, setScheduleConfig] = useState<ScheduleConfig>({ type: 'daily', time: '15:30' })
 
   const { toast } = useToast()
+
+  const formatPreviewTime = (iso: string, tz?: string): string => {
+    try {
+      const d = new Date(iso)
+      if (isNaN(d.getTime())) return iso
+      return d.toLocaleString('zh-CN', {
+        timeZone: tz || undefined,
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    } catch {
+      return iso
+    }
+  }
 
   const load = async () => {
     try {
@@ -119,6 +144,19 @@ export default function AgentsPage() {
       setAgents(agentData)
       setServices(servicesData)
       setChannels(channelData)
+
+      // 预加载未来触发时间（避免“工作日/周末”语义误解）
+      const previewPairs = await Promise.all(agentData.map(async a => {
+        if (!a.schedule) return [a.name, { schedule: '', timezone: '', next_runs: [] }] as const
+        try {
+          const p = await fetchAPI<SchedulePreview>(`/agents/${a.name}/schedule/preview?count=3`)
+          return [a.name, p] as const
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : '预览失败'
+          return [a.name, { error: msg }] as const
+        }
+      }))
+      setPreviews(Object.fromEntries(previewPairs))
     } catch (e) {
       console.error(e)
     } finally {
@@ -212,6 +250,7 @@ export default function AgentsPage() {
         <div className="space-y-4">
           {agents.map(agent => {
             const modeLabel = agent.execution_mode === 'single' ? '逐只分析' : '批量分析'
+            const preview = previews[agent.name]
             return (
               <div key={agent.name} className="card-hover p-4 md:p-6">
                 <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 sm:gap-6">
@@ -234,6 +273,29 @@ export default function AgentsPage() {
                         <Settings2 className="w-3 h-3 text-muted-foreground/50" />
                       </button>
                     </div>
+
+                    {/* 未来触发时间（按调度时区） */}
+                    {'error' in (preview || {}) ? (
+                      <div className="mt-2 ml-[22px] text-[11px] text-muted-foreground">
+                        未来触发时间：{(preview as { error: string }).error}
+                      </div>
+                    ) : (preview as SchedulePreview | undefined)?.next_runs?.length ? (
+                      <div className="mt-2 ml-[22px] flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <span className="opacity-80">未来 3 次：</span>
+                        {(preview as SchedulePreview).next_runs.map((t, i) => (
+                          <span
+                            key={i}
+                            className="px-1.5 py-0.5 rounded border border-border/60 bg-accent/30 font-mono"
+                            title={t}
+                          >
+                            {formatPreviewTime(t, (preview as SchedulePreview).timezone)}
+                          </span>
+                        ))}
+                        {(preview as SchedulePreview).timezone ? (
+                          <span className="opacity-60">({(preview as SchedulePreview).timezone})</span>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     <div className="mt-4 ml-[22px] space-y-3">
                       {/* AI Model select */}

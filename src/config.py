@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 import yaml
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, AliasChoices
 
 from src.models.market import MarketCode
 
@@ -27,7 +27,16 @@ class Settings(BaseSettings):
     ca_cert_file: str = ""
 
     # 调度
+    # day_of_week 使用 POSIX cron 语义(1-5=周一到周五)
     daily_report_cron: str = "30 15 * * 1-5"
+
+    # 默认时区（用于调度、时间展示等）。
+    # 统一使用一个环境变量控制：TZ（默认 Asia/Shanghai）。
+    # 建议使用 IANA 时区名，如 Asia/Shanghai, America/New_York。
+    app_timezone: str = Field(
+        default="Asia/Shanghai",
+        validation_alias=AliasChoices("TZ", "APP_TIMEZONE"),
+    )
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -35,6 +44,7 @@ class Settings(BaseSettings):
 @dataclass
 class StockConfig:
     """自选股配置"""
+
     symbol: str
     name: str
     market: MarketCode
@@ -43,6 +53,7 @@ class StockConfig:
 @dataclass
 class AppConfig:
     """应用完整配置"""
+
     settings: Settings
     watchlist: list[StockConfig] = field(default_factory=list)
 
@@ -60,11 +71,13 @@ def load_watchlist(path: str | Path = "config/watchlist.yaml") -> list[StockConf
     for market_group in data.get("markets", []):
         market_code = MarketCode(market_group["code"])
         for stock in market_group.get("stocks", []):
-            stocks.append(StockConfig(
-                symbol=stock["symbol"],
-                name=stock["name"],
-                market=market_code,
-            ))
+            stocks.append(
+                StockConfig(
+                    symbol=stock["symbol"],
+                    name=stock["name"],
+                    market=market_code,
+                )
+            )
 
     return stocks
 

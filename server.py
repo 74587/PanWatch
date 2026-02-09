@@ -1,4 +1,5 @@
 """PanWatch 统一服务入口 - Web 后台 + Agent 调度"""
+
 import logging
 import os
 import time
@@ -7,7 +8,16 @@ from contextlib import asynccontextmanager
 import uvicorn
 
 from src.web.database import init_db, SessionLocal
-from src.web.models import AgentConfig, Stock, StockAgent, AIService, AIModel, NotifyChannel, AppSettings, DataSource
+from src.web.models import (
+    AgentConfig,
+    Stock,
+    StockAgent,
+    AIService,
+    AIModel,
+    NotifyChannel,
+    AppSettings,
+    DataSource,
+)
 from src.web.log_handler import DBLogHandler
 from src.config import Settings, AppConfig, StockConfig
 from src.models.market import MarketCode
@@ -40,10 +50,9 @@ def setup_ssl():
     bundle_path = os.path.join(os.path.dirname(__file__), "data", "ca-bundle.pem")
     os.makedirs(os.path.dirname(bundle_path), exist_ok=True)
 
-    need_rebuild = (
-        not os.path.exists(bundle_path)
-        or os.path.getmtime(ca_cert) > os.path.getmtime(bundle_path)
-    )
+    need_rebuild = not os.path.exists(bundle_path) or os.path.getmtime(
+        ca_cert
+    ) > os.path.getmtime(bundle_path)
 
     if need_rebuild:
         with open(bundle_path, "w") as out:
@@ -65,7 +74,11 @@ def setup_logging():
 
     # 控制台输出
     console = logging.StreamHandler()
-    console.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s [%(name)s] %(message)s", datefmt="%H:%M:%S"))
+    console.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-5s [%(name)s] %(message)s", datefmt="%H:%M:%S"
+        )
+    )
     root.addHandler(console)
 
     # 数据库持久化
@@ -101,7 +114,11 @@ def setup_playwright():
     if os.path.exists(browser_dir):
         try:
             dirs = os.listdir(browser_dir)
-            if any(d.startswith("chromium") for d in dirs if os.path.isdir(os.path.join(browser_dir, d))):
+            if any(
+                d.startswith("chromium")
+                for d in dirs
+                if os.path.isdir(os.path.join(browser_dir, d))
+            ):
                 logger.info(f"Playwright 浏览器已就绪: {browser_dir}")
                 return
         except Exception:
@@ -174,11 +191,11 @@ def seed_agents():
             "schedule": "*/5 9-15 * * 1-5",  # 每5分钟扫描一次
             "execution_mode": "single",  # 单只模式：逐只分析，实时发送
             "config": {
-                "price_alert_threshold": 3.0,   # 涨跌幅超过3%触发
-                "volume_alert_ratio": 2.0,      # 量比超过2倍触发
-                "stop_loss_warning": -5.0,      # 亏损超过5%预警
-                "take_profit_warning": 10.0,    # 盈利超过10%提醒
-                "throttle_minutes": 30,         # 同一股票30分钟内不重复通知
+                "price_alert_threshold": 3.0,  # 涨跌幅超过3%触发
+                "volume_alert_ratio": 2.0,  # 量比超过2倍触发
+                "stop_loss_warning": -5.0,  # 亏损超过5%预警
+                "take_profit_warning": 10.0,  # 盈利超过10%提醒
+                "throttle_minutes": 30,  # 同一股票30分钟内不重复通知
             },
         },
         {
@@ -212,14 +229,18 @@ def seed_agents():
     ]
 
     for agent_data in agents:
-        existing = db.query(AgentConfig).filter(AgentConfig.name == agent_data["name"]).first()
+        existing = (
+            db.query(AgentConfig).filter(AgentConfig.name == agent_data["name"]).first()
+        )
         if not existing:
             db.add(AgentConfig(**agent_data))
         else:
             # 始终同步 execution_mode（确保代码中的定义生效）
             existing.execution_mode = agent_data.get("execution_mode", "batch")
             # 同步 display_name 和 description
-            existing.display_name = agent_data.get("display_name", existing.display_name)
+            existing.display_name = agent_data.get(
+                "display_name", existing.display_name
+            )
             existing.description = agent_data.get("description", existing.description)
             # 仅在用户未配置时补齐默认 config
             if agent_data.get("config") and (not existing.config):
@@ -330,10 +351,14 @@ def seed_data_sources():
     ]
 
     for source_data in sources:
-        existing = db.query(DataSource).filter(
-            DataSource.name == source_data["name"],
-            DataSource.provider == source_data["provider"],
-        ).first()
+        existing = (
+            db.query(DataSource)
+            .filter(
+                DataSource.name == source_data["name"],
+                DataSource.provider == source_data["provider"],
+            )
+            .first()
+        )
         if existing:
             # 更新已存在记录的新字段（保留用户可能修改的配置）
             if existing.supports_batch != source_data.get("supports_batch", False):
@@ -352,23 +377,29 @@ def load_watchlist_for_agent(agent_name: str) -> list[StockConfig]:
     """从数据库加载某个 Agent 关联的自选股"""
     db = SessionLocal()
     try:
-        stock_agents = db.query(StockAgent).filter(StockAgent.agent_name == agent_name).all()
+        stock_agents = (
+            db.query(StockAgent).filter(StockAgent.agent_name == agent_name).all()
+        )
         stock_ids = [sa.stock_id for sa in stock_agents]
         if not stock_ids:
             return []
 
-        stocks = db.query(Stock).filter(Stock.id.in_(stock_ids), Stock.enabled == True).all()
+        stocks = (
+            db.query(Stock).filter(Stock.id.in_(stock_ids), Stock.enabled == True).all()
+        )
         result = []
         for s in stocks:
             try:
                 market = MarketCode(s.market)
             except ValueError:
                 market = MarketCode.CN
-            result.append(StockConfig(
-                symbol=s.symbol,
-                name=s.name,
-                market=market,
-            ))
+            result.append(
+                StockConfig(
+                    symbol=s.symbol,
+                    name=s.name,
+                    market=market,
+                )
+            )
         return result
     finally:
         db.close()
@@ -381,7 +412,9 @@ def load_portfolio_for_agent(agent_name: str) -> PortfolioInfo:
     db = SessionLocal()
     try:
         # 获取 Agent 关联的股票 ID
-        stock_agents = db.query(StockAgent).filter(StockAgent.agent_name == agent_name).all()
+        stock_agents = (
+            db.query(StockAgent).filter(StockAgent.agent_name == agent_name).all()
+        )
         stock_ids = set(sa.stock_id for sa in stock_agents)
         if not stock_ids:
             return PortfolioInfo()
@@ -392,10 +425,14 @@ def load_portfolio_for_agent(agent_name: str) -> PortfolioInfo:
         account_infos = []
         for acc in accounts:
             # 获取该账户中属于关联股票的持仓
-            positions = db.query(Position).filter(
-                Position.account_id == acc.id,
-                Position.stock_id.in_(stock_ids),
-            ).all()
+            positions = (
+                db.query(Position)
+                .filter(
+                    Position.account_id == acc.id,
+                    Position.stock_id.in_(stock_ids),
+                )
+                .all()
+            )
 
             position_infos = []
             for pos in positions:
@@ -407,25 +444,29 @@ def load_portfolio_for_agent(agent_name: str) -> PortfolioInfo:
                 except ValueError:
                     market = MarketCode.CN
 
-                position_infos.append(PositionInfo(
-                    account_id=acc.id,
-                    account_name=acc.name,
-                    stock_id=stock.id,
-                    symbol=stock.symbol,
-                    name=stock.name,
-                    market=market,
-                    cost_price=pos.cost_price,
-                    quantity=pos.quantity,
-                    invested_amount=pos.invested_amount,
-                    trading_style=pos.trading_style or "swing",
-                ))
+                position_infos.append(
+                    PositionInfo(
+                        account_id=acc.id,
+                        account_name=acc.name,
+                        stock_id=stock.id,
+                        symbol=stock.symbol,
+                        name=stock.name,
+                        market=market,
+                        cost_price=pos.cost_price,
+                        quantity=pos.quantity,
+                        invested_amount=pos.invested_amount,
+                        trading_style=pos.trading_style or "swing",
+                    )
+                )
 
-            account_infos.append(AccountInfo(
-                id=acc.id,
-                name=acc.name,
-                available_funds=acc.available_funds,
-                positions=position_infos,
-            ))
+            account_infos.append(
+                AccountInfo(
+                    id=acc.id,
+                    name=acc.name,
+                    available_funds=acc.available_funds,
+                    positions=position_infos,
+                )
+            )
 
         return PortfolioInfo(accounts=account_infos)
     finally:
@@ -451,32 +492,40 @@ def load_portfolio_for_stock(stock_id: int) -> PortfolioInfo:
 
         account_infos = []
         for acc in accounts:
-            pos = db.query(Position).filter(
-                Position.account_id == acc.id,
-                Position.stock_id == stock_id,
-            ).first()
+            pos = (
+                db.query(Position)
+                .filter(
+                    Position.account_id == acc.id,
+                    Position.stock_id == stock_id,
+                )
+                .first()
+            )
 
             position_infos = []
             if pos:
-                position_infos.append(PositionInfo(
-                    account_id=acc.id,
-                    account_name=acc.name,
-                    stock_id=stock.id,
-                    symbol=stock.symbol,
-                    name=stock.name,
-                    market=market,
-                    cost_price=pos.cost_price,
-                    quantity=pos.quantity,
-                    invested_amount=pos.invested_amount,
-                    trading_style=pos.trading_style or "swing",
-                ))
+                position_infos.append(
+                    PositionInfo(
+                        account_id=acc.id,
+                        account_name=acc.name,
+                        stock_id=stock.id,
+                        symbol=stock.symbol,
+                        name=stock.name,
+                        market=market,
+                        cost_price=pos.cost_price,
+                        quantity=pos.quantity,
+                        invested_amount=pos.invested_amount,
+                        trading_style=pos.trading_style or "swing",
+                    )
+                )
 
-            account_infos.append(AccountInfo(
-                id=acc.id,
-                name=acc.name,
-                available_funds=acc.available_funds,
-                positions=position_infos,
-            ))
+            account_infos.append(
+                AccountInfo(
+                    id=acc.id,
+                    name=acc.name,
+                    available_funds=acc.available_funds,
+                    positions=position_infos,
+                )
+            )
 
         return PortfolioInfo(accounts=account_infos)
     finally:
@@ -493,7 +542,9 @@ def _get_proxy() -> str:
         db.close()
 
 
-def resolve_ai_model(agent_name: str, stock_agent_id: int | None = None) -> tuple[AIModel | None, AIService | None]:
+def resolve_ai_model(
+    agent_name: str, stock_agent_id: int | None = None
+) -> tuple[AIModel | None, AIService | None]:
     """解析 AI 模型: stock_agent 覆盖 → agent 默认 → 系统默认(is_default=True)
     返回 (model, service) 元组"""
     db = SessionLocal()
@@ -541,7 +592,9 @@ def resolve_ai_model(agent_name: str, stock_agent_id: int | None = None) -> tupl
         db.close()
 
 
-def resolve_notify_channels(agent_name: str, stock_agent_id: int | None = None) -> list[NotifyChannel]:
+def resolve_notify_channels(
+    agent_name: str, stock_agent_id: int | None = None
+) -> list[NotifyChannel]:
     """解析通知渠道: stock_agent 覆盖 → agent 默认 → 系统默认(is_default=True)"""
     db = SessionLocal()
     try:
@@ -561,15 +614,23 @@ def resolve_notify_channels(agent_name: str, stock_agent_id: int | None = None) 
 
         # 3. 按 id 列表查询或取系统默认
         if channel_ids:
-            channels = db.query(NotifyChannel).filter(
-                NotifyChannel.id.in_(channel_ids),
-                NotifyChannel.enabled == True,
-            ).all()
+            channels = (
+                db.query(NotifyChannel)
+                .filter(
+                    NotifyChannel.id.in_(channel_ids),
+                    NotifyChannel.enabled == True,
+                )
+                .all()
+            )
         else:
-            channels = db.query(NotifyChannel).filter(
-                NotifyChannel.is_default == True,
-                NotifyChannel.enabled == True,
-            ).all()
+            channels = (
+                db.query(NotifyChannel)
+                .filter(
+                    NotifyChannel.is_default == True,
+                    NotifyChannel.enabled == True,
+                )
+                .all()
+            )
 
         for ch in channels:
             db.expunge(ch)
@@ -586,7 +647,9 @@ def _build_notifier(channels: list[NotifyChannel]) -> NotifierManager:
     return notifier
 
 
-def _build_ai_client(model: AIModel | None, service: AIService | None, proxy: str) -> AIClient:
+def _build_ai_client(
+    model: AIModel | None, service: AIService | None, proxy: str
+) -> AIClient:
     """根据解析后的 model+service 构建 AIClient"""
     if model and service:
         return AIClient(
@@ -640,7 +703,8 @@ AGENT_REGISTRY: dict[str, type] = {
 
 def build_scheduler() -> AgentScheduler:
     """构建调度器并注册已启用的 Agent"""
-    sched = AgentScheduler()
+    settings = Settings()
+    sched = AgentScheduler(timezone=settings.app_timezone)
 
     # 设置 context 构建函数（每次执行时动态获取最新配置）
     sched.set_context_builder(build_context)
@@ -659,22 +723,38 @@ def build_scheduler() -> AgentScheduler:
 
             agent_kwargs = cfg.config or {}
             try:
-                agent_instance = agent_cls(**agent_kwargs) if agent_kwargs else agent_cls()
+                agent_instance = (
+                    agent_cls(**agent_kwargs) if agent_kwargs else agent_cls()
+                )
             except TypeError:
                 agent_instance = agent_cls()
-            sched.register(agent_instance, schedule=cfg.schedule, execution_mode=cfg.execution_mode or "batch")
+            sched.register(
+                agent_instance,
+                schedule=cfg.schedule,
+                execution_mode=cfg.execution_mode or "batch",
+            )
     finally:
         db.close()
 
     return sched
 
 
-def _log_trigger_info(agent_name: str, stocks: list, model: AIModel | None, service: AIService | None, channels: list[NotifyChannel]):
+def _log_trigger_info(
+    agent_name: str,
+    stocks: list,
+    model: AIModel | None,
+    service: AIService | None,
+    channels: list[NotifyChannel],
+):
     """打印 Agent 触发时的上下文信息"""
-    stock_names = ", ".join(f"{s.name}({s.symbol})" if hasattr(s, 'symbol') else str(s) for s in stocks)
+    stock_names = ", ".join(
+        f"{s.name}({s.symbol})" if hasattr(s, "symbol") else str(s) for s in stocks
+    )
     ai_info = f"{service.name}/{model.model}" if model and service else "未配置"
     channel_info = ", ".join(ch.name for ch in channels) if channels else "无"
-    logger.info(f"[触发] Agent={agent_name} | 股票=[{stock_names}] | AI={ai_info} | 通知=[{channel_info}]")
+    logger.info(
+        f"[触发] Agent={agent_name} | 股票=[{stock_names}] | AI={ai_info} | 通知=[{channel_info}]"
+    )
 
 
 def get_agent_execution_mode(agent_name: str) -> str:
@@ -846,6 +926,7 @@ async def lifespan(app):
 
     # 从环境变量初始化认证（Docker 部署用）
     from src.web.api.auth import init_auth_from_env
+
     db = SessionLocal()
     try:
         if init_auth_from_env(db):
@@ -860,11 +941,13 @@ async def lifespan(app):
     # 后台刷新股票列表缓存
     import threading
     from src.web.stock_list import get_stock_list, refresh_stock_list
+
     def refresh_stock_cache():
         stocks = get_stock_list()
-        if not stocks or len([s for s in stocks if s['market'] == 'CN']) == 0:
+        if not stocks or len([s for s in stocks if s["market"] == "CN"]) == 0:
             logger.info("股票列表缓存为空或缺少 A 股，后台刷新中...")
             refresh_stock_list()
+
     threading.Thread(target=refresh_stock_cache, daemon=True).start()
 
     global scheduler
@@ -878,6 +961,7 @@ async def lifespan(app):
 
 # 模块级 app 实例，供 uvicorn reload 使用
 from src.web.app import app  # noqa: E402
+
 app.router.lifespan_context = lifespan
 
 # 生产环境静态文件服务

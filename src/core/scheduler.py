@@ -3,12 +3,11 @@ import time
 from typing import Callable, Awaitable
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 
 from src.agents.base import BaseAgent, AgentContext
 from src.core.agent_runs import record_agent_run
 from src.models.market import MARKETS
+from src.core.schedule_parser import parse_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -16,10 +15,11 @@ logger = logging.getLogger(__name__)
 class AgentScheduler:
     """Agent 调度器"""
 
-    def __init__(self):
+    def __init__(self, timezone: str = "UTC"):
         self.scheduler = AsyncIOScheduler()
         self.agents: dict[str, BaseAgent] = {}
         self.execution_modes: dict[str, str] = {}
+        self.timezone = timezone
         # 改为存储 context 构建函数，而非固定 context
         self.context_builder: Callable[[str], AgentContext] | None = None
 
@@ -42,10 +42,9 @@ class AgentScheduler:
         self.execution_modes[agent.name] = execution_mode or "batch"
 
         # 解析调度表达式
-        if schedule.startswith("interval:"):
-            trigger = self._parse_interval(schedule)
-        else:
-            trigger = self._parse_cron(schedule)
+        # cron 使用 5 段: "分 时 日 月 周"
+        # 其中 day_of_week 的数字按 POSIX cron 语义(1-5=周一到周五)，会在内部做一次归一化。
+        trigger = parse_schedule(schedule, timezone=self.timezone)
 
         self.scheduler.add_job(
             self._run_agent,
@@ -58,39 +57,7 @@ class AgentScheduler:
 
         logger.info(f"注册 Agent: {agent.display_name} (schedule: {schedule})")
 
-    def _parse_cron(self, cron: str) -> CronTrigger:
-        """解析 cron 表达式（使用北京时间）"""
-        parts = cron.split()
-        if len(parts) != 5:
-            raise ValueError(f"无效的 cron 表达式: {cron}")
-
-        return CronTrigger(
-            minute=parts[0],
-            hour=parts[1],
-            day=parts[2],
-            month=parts[3],
-            day_of_week=parts[4],
-            timezone="Asia/Shanghai",  # 使用北京时间
-        )
-
-    def _parse_interval(self, expr: str) -> IntervalTrigger:
-        """
-        解析 interval 表达式
-
-        格式: interval:3m, interval:30s, interval:1h
-        """
-        value = expr.replace("interval:", "")
-        if value.endswith("s"):
-            seconds = int(value[:-1])
-            return IntervalTrigger(seconds=seconds)
-        elif value.endswith("m"):
-            minutes = int(value[:-1])
-            return IntervalTrigger(minutes=minutes)
-        elif value.endswith("h"):
-            hours = int(value[:-1])
-            return IntervalTrigger(hours=hours)
-        else:
-            raise ValueError(f"无效的 interval 表达式: {expr}")
+    # NOTE: cron/interval 解析逻辑统一放在 src/core/schedule_parser.py
 
     async def _run_agent(self, agent_name: str):
         """执行指定 Agent（动态构建 context）"""
