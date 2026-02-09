@@ -188,12 +188,15 @@ jobs:
             VERSION="${ref_name}"
           fi
 
-          text="${icon} PanWatch Release ${status_text}
-Repository: ${{ github.repository }}
-Version: ${VERSION}
-Ref: ${ref_name}
-Trigger: ${event_name} by ${actor}
-Run: ${run_url}"
+          text="$(cat <<EOF
+          ${icon} PanWatch Release ${status_text}
+          Repository: ${{ github.repository }}
+          Version: ${VERSION}
+          Ref: ${ref_name}
+          Trigger: ${event_name} by ${actor}
+          Run: ${run_url}
+          EOF
+          )"
 
           curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
