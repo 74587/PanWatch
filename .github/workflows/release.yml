@@ -130,14 +130,14 @@ jobs:
 
           {
             echo "## Docker"
-            echo "- `${{ env.IMAGE_NAME }}:$current`"
-            echo "- `${{ env.IMAGE_NAME }}:latest`"
+            echo "- $IMAGE_NAME:$current"
+            echo "- $IMAGE_NAME:latest"
             echo ""
             echo "## Commits"
             if [[ -n "$prev" ]]; then
               echo "Compare: https://github.com/$repo/compare/$prev...$current"
               echo ""
-              echo "Changes since `$prev`:"
+              echo "Changes since $prev:"
               echo ""
               # Non-merge commits only (exclude MR/PR merges).
               git log --no-merges --pretty=format:'- %s (%h)' "$range" || true

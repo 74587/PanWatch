@@ -28,6 +28,38 @@ interface SchedulePreview {
   next_runs: string[]
 }
 
+interface AgentRun {
+  id: number
+  agent_name: string
+  status: string
+  result: string
+  error: string
+  duration_ms: number
+  created_at: string
+}
+
+interface AgentsHealth {
+  timezone: string
+  summary: {
+    next_24h_count: number
+    recent_failed_count: number
+  }
+  agents: Array<{
+    name: string
+    display_name: string
+    enabled: boolean
+    schedule: string
+    execution_mode: string
+    next_runs: string[]
+    last_run: null | {
+      status: string
+      created_at: string
+      duration_ms: number
+      error: string
+    }
+  }>
+}
+
 // 调度类型
 type ScheduleType = 'daily' | 'weekdays' | 'interval' | 'cron'
 
@@ -109,11 +141,20 @@ export default function AgentsPage() {
   const [loading, setLoading] = useState(true)
   const [triggering, setTriggering] = useState<string | null>(null)
 
+  const [health, setHealth] = useState<AgentsHealth | null>(null)
+  const [healthLoading, setHealthLoading] = useState(false)
+
   const [previews, setPreviews] = useState<Record<string, SchedulePreview | { error: string }>>({})
 
   // 调度编辑弹窗
   const [scheduleDialogAgent, setScheduleDialogAgent] = useState<AgentConfig | null>(null)
   const [scheduleConfig, setScheduleConfig] = useState<ScheduleConfig>({ type: 'daily', time: '15:30' })
+  const [schedulePreview, setSchedulePreview] = useState<SchedulePreview | { error: string } | null>(null)
+  const [schedulePreviewLoading, setSchedulePreviewLoading] = useState(false)
+
+  const [runsOpen, setRunsOpen] = useState<Record<string, boolean>>({})
+  const [runsLoading, setRunsLoading] = useState<Record<string, boolean>>({})
+  const [runs, setRuns] = useState<Record<string, AgentRun[] | { error: string }>>({})
 
   const { toast } = useToast()
 
@@ -164,7 +205,44 @@ export default function AgentsPage() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  const loadHealth = async () => {
+    setHealthLoading(true)
+    try {
+      const h = await fetchAPI<AgentsHealth>('/agents/health')
+      setHealth(h)
+    } catch (e) {
+      console.error(e)
+      setHealth(null)
+    } finally {
+      setHealthLoading(false)
+    }
+  }
+
+  useEffect(() => { load(); loadHealth() }, [])
+
+  // 调度编辑弹窗：实时预览未来触发时间（防止工作日/周末语义误解）
+  useEffect(() => {
+    if (!scheduleDialogAgent) {
+      setSchedulePreview(null)
+      return
+    }
+
+    const cron = configToCron(scheduleConfig)
+    const timer = setTimeout(async () => {
+      setSchedulePreviewLoading(true)
+      try {
+        const p = await fetchAPI<SchedulePreview>(`/agents/schedule/preview?schedule=${encodeURIComponent(cron)}&count=5`)
+        setSchedulePreview(p)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : '预览失败'
+        setSchedulePreview({ error: msg })
+      } finally {
+        setSchedulePreviewLoading(false)
+      }
+    }, 350)
+
+    return () => clearTimeout(timer)
+  }, [scheduleDialogAgent, scheduleConfig])
 
   const toggleAgent = async (agent: AgentConfig) => {
     await fetchAPI(`/agents/${agent.name}`, {
@@ -183,6 +261,24 @@ export default function AgentsPage() {
       toast(e instanceof Error ? e.message : '触发失败', 'error')
     } finally {
       setTriggering(null)
+    }
+  }
+
+  const toggleRuns = async (agentName: string) => {
+    const nextOpen = !runsOpen[agentName]
+    setRunsOpen(prev => ({ ...prev, [agentName]: nextOpen }))
+    if (!nextOpen) return
+
+    if (runs[agentName] || runsLoading[agentName]) return
+    setRunsLoading(prev => ({ ...prev, [agentName]: true }))
+    try {
+      const data = await fetchAPI<AgentRun[]>(`/agents/${agentName}/history?limit=5`)
+      setRuns(prev => ({ ...prev, [agentName]: data }))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '加载失败'
+      setRuns(prev => ({ ...prev, [agentName]: { error: msg } }))
+    } finally {
+      setRunsLoading(prev => ({ ...prev, [agentName]: false }))
     }
   }
 
@@ -236,6 +332,31 @@ export default function AgentsPage() {
       <div className="mb-4 md:mb-8">
         <h1 className="text-[20px] md:text-[22px] font-bold text-foreground tracking-tight">Agent</h1>
         <p className="text-[12px] md:text-[13px] text-muted-foreground mt-0.5 md:mt-1">自动化任务管理与调度</p>
+      </div>
+
+      {/* Scheduler Health */}
+      <div className="card p-4 mb-4">
+        <div className="flex items-center justify-between">
+          <div className="text-[13px] font-semibold text-foreground">调度健康</div>
+          <Button variant="secondary" size="sm" className="h-8" onClick={loadHealth} disabled={healthLoading}>
+            {healthLoading ? (
+              <span className="w-3.5 h-3.5 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+            ) : (
+              <span className="text-[12px]">刷新</span>
+            )}
+          </Button>
+        </div>
+        {health ? (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
+            <span>时区: <span className="font-mono text-foreground/90">{health.timezone}</span></span>
+            <span className="opacity-50">|</span>
+            <span>未来 24h 将触发: <span className="font-mono text-foreground/90">{health.summary.next_24h_count}</span></span>
+            <span className="opacity-50">|</span>
+            <span>最近失败: <span className={`font-mono ${health.summary.recent_failed_count > 0 ? 'text-rose-600' : 'text-foreground/90'}`}>{health.summary.recent_failed_count}</span></span>
+          </div>
+        ) : (
+          <div className="mt-2 text-[12px] text-muted-foreground">—</div>
+        )}
       </div>
 
       {agents.length === 0 ? (
@@ -367,6 +488,14 @@ export default function AgentsPage() {
                       <span className="hidden sm:inline">{triggering === agent.name ? '运行中' : '触发'}</span>
                     </Button>
                     <Button
+                      variant="secondary"
+                      size="sm"
+                      className="h-8"
+                      onClick={() => toggleRuns(agent.name)}
+                    >
+                      <span className="text-[12px]">最近运行</span>
+                    </Button>
+                    <Button
                       variant={agent.enabled ? 'destructive' : 'default'}
                       size="sm"
                       className="h-8"
@@ -377,6 +506,48 @@ export default function AgentsPage() {
                     </Button>
                   </div>
                 </div>
+
+                {runsOpen[agent.name] && (
+                  <div className="mt-4 ml-[22px] sm:ml-0 rounded-lg border border-border/40 bg-accent/20 p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[12px] font-medium text-foreground">最近 5 次运行</div>
+                      {runsLoading[agent.name] && (
+                        <span className="w-3.5 h-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                      )}
+                    </div>
+                    {(() => {
+                      const data = runs[agent.name]
+                      if (!data) {
+                        return <div className="mt-2 text-[11px] text-muted-foreground">加载中…</div>
+                      }
+                      if ('error' in data) {
+                        return <div className="mt-2 text-[11px] text-muted-foreground">{data.error}</div>
+                      }
+                      if (data.length === 0) {
+                        return <div className="mt-2 text-[11px] text-muted-foreground">暂无记录</div>
+                      }
+                      return (
+                        <div className="mt-2 space-y-2">
+                          {data.map(r => (
+                            <div key={r.id} className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-[11px] text-muted-foreground">
+                                  <span className={`inline-block w-1.5 h-1.5 rounded-full mr-2 ${r.status === 'failed' ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+                                  <span className="font-mono">{r.created_at}</span>
+                                  <span className="ml-2 font-mono opacity-70">{Math.round((r.duration_ms || 0) / 1000)}s</span>
+                                </div>
+                                {r.error ? (
+                                  <div className="mt-0.5 text-[11px] text-rose-600 break-words">{r.error}</div>
+                                ) : null}
+                              </div>
+                              <div className="text-[10px] text-muted-foreground/70 font-mono">{r.status}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+                  </div>
+                )}
               </div>
             )
           })}
@@ -458,6 +629,41 @@ export default function AgentsPage() {
                 </p>
               </div>
             )}
+
+            {/* Preview */}
+            <div className="rounded-lg border border-border/50 bg-accent/20 p-3">
+              <div className="flex items-center justify-between">
+                <div className="text-[12px] font-medium text-foreground">未来触发时间预览</div>
+                {schedulePreviewLoading && (
+                  <span className="w-3.5 h-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                )}
+              </div>
+              {'error' in (schedulePreview || {}) ? (
+                <div className="mt-2 text-[11px] text-muted-foreground">
+                  {(schedulePreview as { error: string }).error}
+                </div>
+              ) : (schedulePreview as SchedulePreview | null)?.next_runs?.length ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                  {(schedulePreview as SchedulePreview).next_runs.map((t, i) => (
+                    <span
+                      key={i}
+                      className="px-1.5 py-0.5 rounded border border-border/60 bg-background/40 font-mono"
+                      title={t}
+                    >
+                      {formatPreviewTime(t, (schedulePreview as SchedulePreview).timezone)}
+                    </span>
+                  ))}
+                  {(schedulePreview as SchedulePreview | null)?.timezone ? (
+                    <span className="opacity-60">({(schedulePreview as SchedulePreview).timezone})</span>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="mt-2 text-[11px] text-muted-foreground">—</div>
+              )}
+              <div className="mt-2 text-[11px] text-muted-foreground/70 font-mono">
+                schedule: {configToCron(scheduleConfig)}
+              </div>
+            </div>
 
             <div className="flex justify-end gap-2 pt-2">
               <Button variant="ghost" onClick={() => setScheduleDialogAgent(null)}>取消</Button>

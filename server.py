@@ -549,6 +549,16 @@ def _get_proxy() -> str:
         db.close()
 
 
+def _get_app_setting(key: str) -> str:
+    """从 app_settings 获取配置（不存在返回空字符串）"""
+    db = SessionLocal()
+    try:
+        setting = db.query(AppSettings).filter(AppSettings.key == key).first()
+        return setting.value if setting and setting.value else ""
+    finally:
+        db.close()
+
+
 def resolve_ai_model(
     agent_name: str, stock_agent_id: int | None = None
 ) -> tuple[AIModel | None, AIService | None]:
@@ -648,7 +658,42 @@ def resolve_notify_channels(
 
 def _build_notifier(channels: list[NotifyChannel]) -> NotifierManager:
     """根据解析后的渠道列表构建 NotifierManager"""
-    notifier = NotifierManager()
+    settings = Settings()
+    # allow UI override via app_settings
+    quiet_hours = _get_app_setting("notify_quiet_hours") or settings.notify_quiet_hours
+    retry_attempts_raw = _get_app_setting("notify_retry_attempts")
+    backoff_raw = _get_app_setting("notify_retry_backoff_seconds")
+    overrides_raw = (
+        _get_app_setting("notify_dedupe_ttl_overrides")
+        or settings.notify_dedupe_ttl_overrides
+    )
+
+    try:
+        retry_attempts = (
+            int(retry_attempts_raw)
+            if retry_attempts_raw
+            else settings.notify_retry_attempts
+        )
+    except Exception:
+        retry_attempts = settings.notify_retry_attempts
+    try:
+        retry_backoff_seconds = (
+            float(backoff_raw) if backoff_raw else settings.notify_retry_backoff_seconds
+        )
+    except Exception:
+        retry_backoff_seconds = settings.notify_retry_backoff_seconds
+
+    from src.core.notify_policy import NotifyPolicy, parse_dedupe_overrides
+
+    policy = NotifyPolicy(
+        timezone=settings.app_timezone,
+        quiet_hours=quiet_hours,
+        retry_attempts=retry_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
+        dedupe_ttl_overrides=parse_dedupe_overrides(overrides_raw),
+    )
+
+    notifier = NotifierManager(policy=policy)
     for ch in channels:
         notifier.add_channel(ch.type, ch.config or {})
     return notifier
@@ -695,6 +740,7 @@ def build_context(agent_name: str, stock_agent_id: int | None = None) -> AgentCo
         config=config,
         portfolio=portfolio,
         model_label=model_label,
+        notify_policy=getattr(notifier, "policy", None),
     )
 
 

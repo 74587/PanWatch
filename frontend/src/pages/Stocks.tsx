@@ -103,6 +103,12 @@ interface AgentConfig {
   execution_mode: string  // batch: 批量分析, single: 逐只分析
 }
 
+interface SchedulePreview {
+  schedule: string
+  timezone: string
+  next_runs: string[]
+}
+
 interface SearchResult {
   symbol: string
   name: string
@@ -377,6 +383,8 @@ export default function StocksPage() {
   // Agent dialog
   const [agentDialogStock, setAgentDialogStock] = useState<Stock | null>(null)
   const [triggeringAgent, setTriggeringAgent] = useState<string | null>(null)
+  const [schedulePreviewCache, setSchedulePreviewCache] = useState<Record<string, SchedulePreview | { error: string }>>({})
+  const [schedulePreviewLoading, setSchedulePreviewLoading] = useState<Record<string, boolean>>({})
   // 运行中的单只股票 Agent（按股票标记具体 Agent 名称）
   const [runningAgents, setRunningAgents] = useState<Record<number, string | null>>({})
   const [agentResultDialog, setAgentResultDialog] = useState<{ title: string; content: string; should_alert: boolean; notified: boolean } | null>(null)
@@ -602,6 +610,29 @@ export default function StocksPage() {
     navigate(`/stock/${encodeURIComponent(stockMarket)}/${encodeURIComponent(stockSymbol)}`)
   }, [navigate])
 
+  const formatPreviewTime = (iso: string, tz?: string): string => {
+    try {
+      const d = new Date(iso)
+      if (isNaN(d.getTime())) return iso
+      return d.toLocaleString('zh-CN', {
+        timeZone: tz || undefined,
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      })
+    } catch {
+      return iso
+    }
+  }
+
+  const effectiveSchedule = (agent: AgentConfig, stockAgent?: StockAgentInfo | null): string => {
+    const local = (stockAgent?.schedule || '').trim()
+    if (local) return local
+    return (agent.schedule || '').trim()
+  }
+
   // Refresh quotes only (decoupled from portfolio and scans)
   const handleRefresh = useCallback(async () => {
     await Promise.all([
@@ -612,6 +643,57 @@ export default function StocksPage() {
   }, [refreshQuotes, loadPoolSuggestions, refreshKlines])
 
   useEffect(() => { load(); loadPortfolio(); loadPoolSuggestions(); refreshKlines() }, [])
+
+  // Agent 配置弹窗：预览未来触发时间（用于自检工作日/周末语义）
+  useEffect(() => {
+    if (!agentDialogStock) return
+    if (!agents || agents.length === 0) return
+
+    const stockAgentMap = new Map((agentDialogStock.agents || []).map(a => [a.agent_name, a]))
+    const schedules = new Set<string>()
+    for (const agent of agents) {
+      if (agent.execution_mode === 'batch') continue
+      const sa = stockAgentMap.get(agent.name)
+      if (!sa) continue
+      const eff = effectiveSchedule(agent, sa)
+      if (eff) schedules.add(eff)
+    }
+
+    const toFetch = Array.from(schedules).filter(s => !schedulePreviewCache[s] && !schedulePreviewLoading[s])
+    if (toFetch.length === 0) return
+
+    let cancelled = false
+    ;(async () => {
+      // Mark loading
+      setSchedulePreviewLoading(prev => {
+        const next = { ...prev }
+        for (const s of toFetch) next[s] = true
+        return next
+      })
+      try {
+        const pairs = await Promise.all(toFetch.map(async s => {
+          try {
+            const p = await fetchAPI<SchedulePreview>(`/agents/schedule/preview?schedule=${encodeURIComponent(s)}&count=5`)
+            return [s, p] as const
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : '预览失败'
+            return [s, { error: msg }] as const
+          }
+        }))
+        if (cancelled) return
+        setSchedulePreviewCache(prev => ({ ...prev, ...Object.fromEntries(pairs) }))
+      } finally {
+        if (cancelled) return
+        setSchedulePreviewLoading(prev => {
+          const next = { ...prev }
+          for (const s of toFetch) next[s] = false
+          return next
+        })
+      }
+    })()
+
+    return () => { cancelled = true }
+  }, [agentDialogStock, agents, schedulePreviewCache, schedulePreviewLoading])
 
   // 触发扫描：调用盘中监控扫描，并刷新建议池
   const scanAndReload = useCallback(async () => {
@@ -2221,6 +2303,45 @@ export default function StocksPage() {
                           </Select>
                           <span className="text-[10px] text-muted-foreground">交易时段</span>
                         </div>
+
+                        {/* Schedule Preview */}
+                        {(() => {
+                          const eff = effectiveSchedule(agent, stockAgent)
+                          const isFollowingGlobal = !(stockAgent?.schedule || '').trim() && !!(agent.schedule || '').trim()
+                          const preview = eff ? schedulePreviewCache[eff] : null
+                          const isLoading = eff ? !!schedulePreviewLoading[eff] : false
+                          if (!eff) return null
+                          return (
+                            <div className="ml-[22px] rounded-lg border border-border/40 bg-background/30 px-2.5 py-2">
+                              <div className="flex items-center justify-between">
+                                <div className="text-[11px] text-muted-foreground">
+                                  未来触发时间预览{isFollowingGlobal ? <span className="ml-1 opacity-70">(跟随全局)</span> : null}
+                                </div>
+                                {isLoading && (
+                                  <span className="w-3 h-3 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                                )}
+                              </div>
+                              {'error' in (preview || {}) ? (
+                                <div className="mt-1 text-[11px] text-muted-foreground">{(preview as any).error}</div>
+                              ) : (preview as SchedulePreview | undefined)?.next_runs?.length ? (
+                                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
+                                  {(preview as SchedulePreview).next_runs.map((t, i) => (
+                                    <span key={i} className="px-1.5 py-0.5 rounded border border-border/60 bg-accent/20 font-mono" title={t}>
+                                      {formatPreviewTime(t, (preview as SchedulePreview).timezone)}
+                                    </span>
+                                  ))}
+                                  {(preview as SchedulePreview).timezone ? (
+                                    <span className="opacity-60">({(preview as SchedulePreview).timezone})</span>
+                                  ) : null}
+                                </div>
+                              ) : (
+                                <div className="mt-1 text-[11px] text-muted-foreground">—</div>
+                              )}
+                              <div className="mt-1 text-[10px] text-muted-foreground/70 font-mono">schedule: {eff}</div>
+                            </div>
+                          )
+                        })()}
+
                         {/* AI Model Select */}
                         <div className="flex items-center gap-2">
                           <Cpu className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />

@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     # 代理
     http_proxy: str = ""
 
+    # 通知策略（可通过 UI 的“系统设置”覆盖）
+    # 静默时间段（本地时区），格式: HH:MM-HH:MM，空为关闭；跨夜示例: 23:00-07:00
+    notify_quiet_hours: str = ""
+    # 通知失败重试次数（不含首次尝试）
+    notify_retry_attempts: int = 2
+    # 重试退避秒数（基数），实际会按 1x,2x,... 递增
+    notify_retry_backoff_seconds: float = 2.0
+    # 幂等窗口覆盖（JSON），示例: {"news_digest":60,"daily_report":720}
+    notify_dedupe_ttl_overrides: str = ""
+
     # SSL 证书（企业环境）
     ca_cert_file: str = ""
 

@@ -197,3 +197,32 @@ def preview_schedule(
         prev = nxt
         current = nxt
     return out
+
+
+def count_runs_within(
+    schedule: str,
+    *,
+    start: datetime,
+    end: datetime,
+    timezone: str = "UTC",
+    max_iters: int = 20000,
+) -> int:
+    """Count fire times within (start, end]."""
+    if not schedule or end <= start:
+        return 0
+
+    trigger = parse_schedule(schedule, timezone=timezone)
+
+    count = 0
+    prev = None
+    current = start
+    for _ in range(max_iters):
+        nxt = trigger.get_next_fire_time(prev, current)
+        if not nxt:
+            break
+        if nxt > end:
+            break
+        count += 1
+        prev = nxt
+        current = nxt
+    return count

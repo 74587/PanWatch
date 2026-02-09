@@ -1,5 +1,6 @@
 import logging
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 from src.web.database import get_db
 from src.web.models import AgentConfig, AgentRun
 from src.core.schedule_parser import preview_schedule
+from src.core.schedule_parser import count_runs_within
 from src.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -23,6 +25,74 @@ def _format_datetime(dt) -> str:
 
 
 router = APIRouter()
+
+
+@router.get("/health")
+def agents_health(db: Session = Depends(get_db)):
+    """调度健康概览（用于排查调度/时区/触发问题）"""
+    tz = Settings().app_timezone or "UTC"
+    try:
+        tzinfo = ZoneInfo(tz)
+    except Exception:
+        tzinfo = timezone.utc
+
+    now = datetime.now(tzinfo)
+    horizon = now + timedelta(hours=24)
+
+    agents = db.query(AgentConfig).order_by(AgentConfig.name.asc()).all()
+    out = []
+    next_24h_count = 0
+    recent_failed_count = 0
+
+    for a in agents:
+        next_runs: list[str] = []
+        if a.enabled and (a.schedule or "").strip():
+            try:
+                runs = preview_schedule(a.schedule, count=3, timezone=tz)
+                next_runs = [r.isoformat() for r in runs]
+                next_24h_count += count_runs_within(
+                    a.schedule, start=now, end=horizon, timezone=tz
+                )
+            except Exception:
+                next_runs = []
+
+        last = (
+            db.query(AgentRun)
+            .filter(AgentRun.agent_name == a.name)
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .first()
+        )
+        last_run = None
+        if last:
+            last_run = {
+                "status": last.status or "",
+                "created_at": _format_datetime(last.created_at),
+                "duration_ms": last.duration_ms or 0,
+                "error": last.error or "",
+            }
+            if a.enabled and (last.status or "") == "failed":
+                recent_failed_count += 1
+
+        out.append(
+            {
+                "name": a.name,
+                "display_name": a.display_name,
+                "enabled": a.enabled,
+                "schedule": a.schedule or "",
+                "execution_mode": a.execution_mode or "batch",
+                "next_runs": next_runs,
+                "last_run": last_run,
+            }
+        )
+
+    return {
+        "timezone": tz,
+        "summary": {
+            "next_24h_count": next_24h_count,
+            "recent_failed_count": recent_failed_count,
+        },
+        "agents": out,
+    }
 
 
 class AgentConfigUpdate(BaseModel):
@@ -97,6 +167,25 @@ def update_agent(
     db.commit()
     db.refresh(agent)
     return _agent_to_response(agent)
+
+
+@router.get("/schedule/preview")
+def preview_schedule_expr(schedule: str, count: int = 5):
+    """预览某个 schedule 表达式接下来几次触发时间（按调度时区）"""
+    tz = Settings().app_timezone or "UTC"
+    if not schedule:
+        return {"schedule": "", "timezone": tz, "next_runs": []}
+
+    try:
+        runs = preview_schedule(schedule, count=count, timezone=tz)
+    except Exception as e:
+        raise HTTPException(400, f"schedule 无法解析: {e}")
+
+    return {
+        "schedule": schedule,
+        "timezone": tz,
+        "next_runs": [r.isoformat() for r in runs],
+    }
 
 
 @router.get("/{agent_name}/schedule/preview")

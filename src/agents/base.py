@@ -7,6 +7,8 @@ from src.core.ai_client import AIClient
 from src.core.notifier import NotifierManager
 from src.config import AppConfig, StockConfig
 from src.models.market import MarketCode
+from src.core.notify_dedupe import build_notify_dedupe_key, check_and_mark_notify
+from src.core.notify_policy import NotifyPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PositionInfo:
     """单个持仓信息"""
+
     account_id: int
     account_name: str
     stock_id: int
@@ -34,6 +37,7 @@ class PositionInfo:
 @dataclass
 class AccountInfo:
     """账户信息"""
+
     id: int
     name: str
     available_funds: float
@@ -48,6 +52,7 @@ class AccountInfo:
 @dataclass
 class PortfolioInfo:
     """持仓组合信息"""
+
     accounts: list[AccountInfo] = field(default_factory=list)
 
     @property
@@ -110,11 +115,13 @@ class PortfolioInfo:
 @dataclass
 class AgentContext:
     """Agent 运行时上下文"""
+
     ai_client: AIClient
     notifier: NotifierManager
     config: AppConfig
     portfolio: PortfolioInfo = field(default_factory=PortfolioInfo)
     model_label: str = ""  # e.g. "智谱/glm-4-flash"
+    notify_policy: NotifyPolicy | None = None
 
     @property
     def watchlist(self) -> list[StockConfig]:
@@ -124,6 +131,7 @@ class AgentContext:
 @dataclass
 class AnalysisResult:
     """分析结果"""
+
     agent_name: str
     title: str
     content: str
@@ -180,6 +188,32 @@ class BaseAgent(ABC):
         """是否需要通知，子类可重写"""
         return True
 
+    def _notify_dedupe_ttl_minutes(self, context: AgentContext) -> int:
+        """Notification idempotency window (minutes).
+
+        P0 policy: per-agent defaults to avoid duplicate notifications.
+        """
+
+        if self.name in ("daily_report", "premarket_outlook"):
+            default = 12 * 60
+        elif self.name == "news_digest":
+            default = 60
+        elif self.name == "chart_analyst":
+            default = 6 * 60
+        # Intraday uses its own per-stock throttle.
+        elif self.name == "intraday_monitor":
+            default = 30
+        else:
+            default = 60
+
+        policy = getattr(context, "notify_policy", None)
+        if policy:
+            try:
+                return policy.dedupe_ttl_minutes(self.name, default)
+            except Exception:
+                return default
+        return default
+
     async def run(self, context: AgentContext) -> AnalysisResult:
         """标准执行流程"""
         logger.info(f"Agent [{self.display_name}] 开始执行")
@@ -190,17 +224,64 @@ class BaseAgent(ABC):
 
             notified = False
             if await self.should_notify(result):
+                # Quiet hours: skip sending without marking as error.
+                policy = getattr(context, "notify_policy", None)
+                if policy:
+                    try:
+                        if policy.is_quiet_now():
+                            logger.info(f"Agent [{self.display_name}] 静默时段跳过通知")
+                            result.raw_data["notified"] = False
+                            result.raw_data["notify_skipped"] = "quiet_hours"
+                            return result
+                    except Exception:
+                        pass
+
+                # Global notification dedupe (idempotency):
+                # avoids repeated pushes when an agent is triggered multiple times.
+                ttl = self._notify_dedupe_ttl_minutes(context)
+                dedupe_key = build_notify_dedupe_key(
+                    self.name, result.title, result.content
+                )
+                scope = f"__notify__:{dedupe_key}"
+                allowed = check_and_mark_notify(
+                    agent_name=self.name,
+                    scope=scope,
+                    ttl_minutes=ttl,
+                    mark=False,
+                )
+                if not allowed:
+                    logger.info(
+                        f"Agent [{self.display_name}] 通知去重命中，跳过发送 (ttl={ttl}m)"
+                    )
+                    result.raw_data["notified"] = False
+                    result.raw_data["notify_skipped"] = "deduped"
+                    return result
+
                 notify_result = await context.notifier.notify_with_result(
                     result.title,
                     result.content,
                     result.images,
                 )
+                if notify_result.get("skipped"):
+                    result.raw_data["notified"] = False
+                    result.raw_data["notify_skipped"] = notify_result.get("skipped")
+                    return result
+
                 notified = bool(notify_result.get("success"))
                 if notified:
                     logger.info(f"Agent [{self.display_name}] 通知已发送")
+                    # Mark dedupe only after a successful send.
+                    check_and_mark_notify(
+                        agent_name=self.name,
+                        scope=scope,
+                        ttl_minutes=ttl,
+                        mark=True,
+                    )
                 else:
                     notify_error = notify_result.get("error") or "未知错误"
-                    logger.error(f"Agent [{self.display_name}] 通知发送失败: {notify_error}")
+                    logger.error(
+                        f"Agent [{self.display_name}] 通知发送失败: {notify_error}"
+                    )
                     result.raw_data["notify_error"] = notify_error
             else:
                 logger.info(f"Agent [{self.display_name}] 无需通知")

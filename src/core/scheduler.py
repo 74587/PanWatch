@@ -89,8 +89,16 @@ class AgentScheduler:
                         )
                         continue
                     try:
-                        await agent.run_single(context, stock.symbol)  # type: ignore[attr-defined]
+                        res = await agent.run_single(context, stock.symbol)  # type: ignore[attr-defined]
                         processed += 1
+                        try:
+                            notify_error = (
+                                (res.raw_data or {}).get("notify_error") if res else ""
+                            )
+                        except Exception:
+                            notify_error = ""
+                        if notify_error:
+                            errors.append(f"{stock.symbol} notify: {notify_error}")
                     except Exception as e:
                         logger.error(
                             f"Agent [{agent_name}] 单只执行失败 {stock.symbol}: {e}",
@@ -111,10 +119,16 @@ class AgentScheduler:
             else:
                 result = await agent.run(context)
                 duration_ms = int((time.monotonic() - start) * 1000)
+                notify_error = ""
+                try:
+                    notify_error = (result.raw_data or {}).get("notify_error") or ""
+                except Exception:
+                    notify_error = ""
                 record_agent_run(
                     agent_name=agent_name,
-                    status="success",
+                    status="failed" if notify_error else "success",
                     result=(result.content or "")[:2000],
+                    error=(notify_error or "")[:2000],
                     duration_ms=duration_ms,
                 )
             logger.info(f"[调度] Agent 执行完成: {agent.display_name}")
