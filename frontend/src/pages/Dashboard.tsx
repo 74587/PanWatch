@@ -828,7 +828,6 @@ export default function DashboardPage() {
         market={insightMarket}
         stockName={insightName}
         hasPosition={insightHasPosition}
-        onOpenFullDetail={(m, s) => navigate(`/stock/${encodeURIComponent(m)}/${encodeURIComponent(s)}`)}
       />
 
       {/* Risk dialog removed (was too noisy when empty) */}

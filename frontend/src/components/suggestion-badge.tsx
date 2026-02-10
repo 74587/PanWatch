@@ -82,17 +82,14 @@ interface SuggestionBadgeProps {
 }
 
 const actionColors: Record<string, string> = {
-  // 盘中监测
   buy: 'bg-rose-500 text-white',
   add: 'bg-rose-400 text-white',
   reduce: 'bg-emerald-500 text-white',
   sell: 'bg-emerald-600 text-white',
   hold: 'bg-amber-500 text-white',
   watch: 'bg-slate-500 text-white',
-  // 盘前分析
-  alert: 'bg-blue-500 text-white',  // 设置预警
-  // 盘后日报
-  avoid: 'bg-red-600 text-white',  // 暂时回避
+  alert: 'bg-blue-500 text-white',
+  avoid: 'bg-red-600 text-white',
 }
 
 const actionLabels: Record<string, string> = {
@@ -105,11 +102,9 @@ const actionLabels: Record<string, string> = {
   avoid: '回避',
 }
 
-// 将各种同义中文/英文文案归一到统一的动作枚举，便于颜色和标签一致
 function normalizeAction(action?: string, label?: string): keyof typeof actionColors | null {
   const raw = (action || label || '').toLowerCase()
   if (!raw) return null
-  // 英文或枚举
   if (raw === 'buy') return 'buy'
   if (raw === 'add' || raw === 'increase') return 'add'
   if (raw === 'reduce' || raw === 'decrease') return 'reduce'
@@ -117,8 +112,7 @@ function normalizeAction(action?: string, label?: string): keyof typeof actionCo
   if (raw === 'hold') return 'hold'
   if (raw === 'watch' || raw === 'neutral') return 'watch'
   if (raw === 'avoid') return 'avoid'
-
-  // 中文同义
+  if (raw === 'alert') return 'alert'
   if (/买入|买|建仓/.test(raw)) return 'buy'
   if (/加仓|增持|补仓/.test(raw)) return 'add'
   if (/减仓|减持/.test(raw)) return 'reduce'

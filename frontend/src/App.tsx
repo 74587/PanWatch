@@ -5,7 +5,6 @@ import { useTheme } from '@/hooks/use-theme'
 import { fetchAPI, isAuthenticated, logout } from '@/lib/utils'
 import DashboardPage from '@/pages/Dashboard'
 import StocksPage from '@/pages/Stocks'
-import StockDetailPage from '@/pages/StockDetail'
 import AgentsPage from '@/pages/Agents'
 import SettingsPage from '@/pages/Settings'
 import DataSourcesPage from '@/pages/DataSources'
@@ -241,7 +240,6 @@ function App() {
         <Routes>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/portfolio" element={<StocksPage />} />
-          <Route path="/stock/:market/:symbol" element={<StockDetailPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/history" element={<HistoryPage />} />
           <Route path="/datasources" element={<DataSourcesPage />} />

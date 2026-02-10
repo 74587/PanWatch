@@ -69,11 +69,39 @@ def _parse_tencent_line(line: str) -> dict | None:
                 except (ValueError, IndexError):
                     pass
 
+        def _to_float(value: str | None) -> float | None:
+            if value is None:
+                return None
+            v = str(value).strip()
+            if not v:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
         # 处理美股 symbol（如 AAPL.OQ -> AAPL）
         # 注意：指数 symbol 以 . 开头（如 .IXIC, .DJI），需要保留
         symbol = parts[2]
         if "." in symbol and not symbol.startswith("."):
             symbol = symbol.split(".")[0]
+
+        # 腾讯常见字段：
+        # - 38=换手率(%)
+        # - 39=市盈率(常见为静态/TTM，视市场而定)
+        # - 44=流通市值
+        # - 45=总市值
+        turnover_rate = None
+        pe_ratio = None
+        if len(parts) > 39:
+            turnover_rate = _to_float(parts[38])
+            pe_ratio = _to_float(parts[39])
+
+        circulating_market_value = None
+        total_market_value = None
+        if len(parts) > 45:
+            circulating_market_value = _to_float(parts[44])
+            total_market_value = _to_float(parts[45])
 
         return {
             "name": parts[1],
@@ -87,6 +115,10 @@ def _parse_tencent_line(line: str) -> dict | None:
             "high_price": float(parts[33] or 0),
             "low_price": float(parts[34] or 0),
             "turnover": turnover,
+            "turnover_rate": turnover_rate,
+            "pe_ratio": pe_ratio,
+            "circulating_market_value": circulating_market_value,
+            "total_market_value": total_market_value,
         }
     except (ValueError, IndexError) as e:
         logger.debug(f"解析腾讯行情失败: {e}")

@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3 } from 'lucide-react'
 import { fetchAPI, useLocalStorage, type AIService, type NotifyChannel } from '@/lib/utils'
 import { SuggestionBadge, type SuggestionInfo, type KlineSummary } from '@/components/suggestion-badge'
@@ -403,7 +402,6 @@ export default function StocksPage() {
   const [removingWatchStock, setRemovingWatchStock] = useState(false)
 
   const { toast } = useToast()
-  const navigate = useNavigate()
 
   const isSuppressCardClick = () => {
     try {
@@ -1738,12 +1736,9 @@ export default function StocksPage() {
                                 <tr key={pos.id} className={`group hover:bg-accent/30 transition-colors ${i > 0 ? 'border-t border-border/20' : ''}`}>
                                   <td className="px-4 py-2.5">
                                     <span className={`text-[9px] px-1 py-0.5 rounded mr-1.5 ${badge.style}`}>{badge.label}</span>
-                                    <button
-                                      className="font-mono text-[12px] font-semibold text-foreground hover:text-primary"
-                                      onClick={() => openStockDetail(pos.symbol, pos.market, pos.name, true)}
-                                    >
+                                    <span className="font-mono text-[12px] font-semibold text-foreground">
                                       {pos.symbol}
-                                    </button>
+                                    </span>
                                     <button
                                       className="ml-1.5 text-[12px] text-muted-foreground hover:text-primary"
                                       onClick={() => openStockDetail(pos.symbol, pos.market, pos.name, true)}
@@ -1836,7 +1831,6 @@ export default function StocksPage() {
                                         <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openKlineDialog(pos.symbol, pos.market, pos.name, true)} title="K线指标"><BarChart3 className="w-3 h-3" /></Button>
                                       ) : null })()}
                                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openNewsDialog(pos.name)} title="相关资讯"><Newspaper className="w-3 h-3" /></Button>
-                                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openStockDetail(pos.symbol, pos.market, pos.name, true)} title="详情"><ExternalLink className="w-3 h-3" /></Button>
                                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openPositionDialog(account.id, pos)}><Pencil className="w-3 h-3" /></Button>
                                       <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeletePosition(pos.id)}><Trash2 className="w-3 h-3" /></Button>
                                     </div>
@@ -1865,12 +1859,9 @@ export default function StocksPage() {
                               <div className="flex items-center justify-between mb-2">
                                 <div className="flex items-center gap-1.5 flex-wrap">
                                   <span className={`text-[9px] px-1 py-0.5 rounded ${badge.style}`}>{badge.label}</span>
-                                  <button
-                                    className="font-mono text-[12px] font-semibold text-foreground hover:text-primary"
-                                    onClick={() => openStockDetail(pos.symbol, pos.market, pos.name, true)}
-                                  >
+                                  <span className="font-mono text-[12px] font-semibold text-foreground">
                                     {pos.symbol}
-                                  </button>
+                                  </span>
                                   <button
                                     className="text-[12px] text-muted-foreground hover:text-primary"
                                     onClick={() => openStockDetail(pos.symbol, pos.market, pos.name, true)}
@@ -1944,7 +1935,6 @@ export default function StocksPage() {
                                     <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openKlineDialog(pos.symbol, pos.market, pos.name, true)} title="K线指标"><BarChart3 className="w-3 h-3" /></Button>
                                   ) : null })()}
                                   <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openNewsDialog(pos.name)}><Newspaper className="w-3 h-3" /></Button>
-                                  <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openStockDetail(pos.symbol, pos.market, pos.name, true)} title="详情"><ExternalLink className="w-3 h-3" /></Button>
                                   <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openPositionDialog(account.id, pos)}><Pencil className="w-3 h-3" /></Button>
                                   <Button variant="ghost" size="icon" className="h-7 w-7 hover:text-destructive" onClick={() => handleDeletePosition(pos.id)}><Trash2 className="w-3 h-3" /></Button>
                                 </div>
@@ -2176,7 +2166,6 @@ export default function StocksPage() {
         market={insightMarket}
         stockName={insightName}
         hasPosition={insightHasPosition}
-        onOpenFullDetail={(m, s) => navigate(`/stock/${encodeURIComponent(m)}/${encodeURIComponent(s)}`)}
       />
 
       {/* Remove Watchlist Dialog */}

@@ -3,12 +3,12 @@ import { ExternalLink, RefreshCw } from 'lucide-react'
 import { fetchAPI, useLocalStorage } from '@/lib/utils'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { SuggestionBadge, type KlineSummary, type SuggestionInfo } from '@/components/suggestion-badge'
 import { useToast } from '@/components/ui/toast'
-import KlineModal from '@/components/KlineModal'
+import InteractiveKline from '@/components/InteractiveKline'
+import { KlineIndicators } from '@/components/kline-indicators'
 import { buildKlineSuggestion } from '@/lib/kline-scorer'
 
 interface QuoteResponse {
@@ -24,6 +24,8 @@ interface QuoteResponse {
   low_price: number | null
   volume: number | null
   turnover: number | null
+  turnover_rate?: number | null
+  pe_ratio?: number | null
   total_market_value?: number | null
   circulating_market_value?: number | null
 }
@@ -55,6 +57,17 @@ interface NewsItem {
   url: string
 }
 
+interface HistoryRecord {
+  id: number
+  agent_name: string
+  stock_symbol: string
+  analysis_date: string
+  title: string
+  content: string
+  suggestions?: Record<string, any> | null
+  created_at: string
+}
+
 interface PortfolioPosition {
   symbol: string
   market: string
@@ -70,17 +83,7 @@ interface PortfolioSummaryResponse {
   }>
 }
 
-type InsightTab = 'overview' | 'kline' | 'suggestions' | 'news'
-type ReplayEvent = {
-  id: string
-  ts: number
-  timeText: string
-  label: string
-  desc: string
-  tone: 'bull' | 'bear' | 'neutral'
-  kind: 'technical' | 'suggestion'
-  isAlert: boolean
-}
+type InsightTab = 'overview' | 'kline' | 'suggestions' | 'news' | 'reports'
 
 interface StockAgentInfo {
   agent_name: string
@@ -98,6 +101,12 @@ interface StockItem {
   agents?: StockAgentInfo[]
 }
 
+const AGENT_LABELS: Record<string, string> = {
+  daily_report: '盘后日报',
+  premarket_outlook: '盘前分析',
+  news_digest: '新闻速递',
+}
+
 function formatNumber(value: number | null | undefined, digits = 2): string {
   if (value == null) return '--'
   return value.toFixed(digits)
@@ -111,6 +120,16 @@ function formatCompactNumber(value: number | null | undefined): string {
   if (abs >= 1e8) return `${(n / 1e8).toFixed(2)}亿`
   if (abs >= 1e4) return `${(n / 1e4).toFixed(2)}万`
   return n.toFixed(0)
+}
+
+function formatMarketCap(value: number | null | undefined): string {
+  if (value == null) return '--'
+  const n = Number(value)
+  if (!isFinite(n)) return '--'
+  const abs = Math.abs(n)
+  if (abs >= 1e8) return `${(n / 1e8).toFixed(2)}亿元`
+  if (abs >= 1e4) return `${(n / 1e4).toFixed(2)}万元`
+  return `${n.toFixed(0)}元`
 }
 
 function formatTime(isoTime?: string): string {
@@ -142,6 +161,57 @@ function marketBadge(market: string) {
   return { style: 'bg-blue-500/10 text-blue-600', label: 'A股' }
 }
 
+function TechnicalIndicatorStrip(props: {
+  klineSummary: KlineSummary | null
+  technicalSuggestion: SuggestionInfo | null
+  stockName: string
+  stockSymbol: string
+  market: string
+  hasPosition: boolean
+  score?: number
+  evidence?: Array<{ text: string; delta: number }>
+}) {
+  const { klineSummary, technicalSuggestion, stockName, stockSymbol, market, hasPosition, score, evidence = [] } = props
+  if (!klineSummary) {
+    return <div className="text-[12px] text-muted-foreground py-3">暂无技术指标</div>
+  }
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[12px] text-muted-foreground">技术指标建议</span>
+        <SuggestionBadge
+          suggestion={technicalSuggestion}
+          stockName={stockName}
+          stockSymbol={stockSymbol}
+          market={market}
+          kline={klineSummary}
+          hasPosition={hasPosition}
+        />
+        <span className="text-[10px] px-2 py-0.5 rounded bg-accent/50 text-foreground">评分 {Number(score ?? 0).toFixed(1)}</span>
+      </div>
+      {evidence.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 text-[10px]">
+          {evidence.slice(0, 6).map((item, idx) => (
+            <span
+              key={`${item.text}-${idx}`}
+              className={`px-2 py-0.5 rounded ${
+                item.delta > 0
+                  ? 'bg-rose-500/15 text-rose-500'
+                  : item.delta < 0
+                    ? 'bg-emerald-500/15 text-emerald-500'
+                    : 'bg-accent/40 text-muted-foreground'
+              }`}
+            >
+              {item.text} {item.delta > 0 ? `+${item.delta}` : item.delta}
+            </span>
+          ))}
+        </div>
+      )}
+      <KlineIndicators summary={klineSummary as any} />
+    </div>
+  )
+}
+
 export default function StockInsightModal(props: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -149,7 +219,6 @@ export default function StockInsightModal(props: {
   market: string
   stockName?: string
   hasPosition?: boolean
-  onOpenFullDetail?: (market: string, symbol: string) => void
 }) {
   const { toast } = useToast()
   const symbol = String(props.symbol || '').trim()
@@ -161,6 +230,14 @@ export default function StockInsightModal(props: {
     'stock_insight_include_expired_suggestions',
     true
   )
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useLocalStorage<boolean>(
+    'stock_insight_auto_refresh_enabled',
+    true
+  )
+  const [autoRefreshSec, setAutoRefreshSec] = useLocalStorage<number>(
+    'stock_insight_auto_refresh_sec',
+    20
+  )
   const [quote, setQuote] = useState<QuoteResponse | null>(null)
   const [klineSummary, setKlineSummary] = useState<KlineSummary | null>(null)
   const [miniKlines, setMiniKlines] = useState<MiniKlineResponse['klines']>([])
@@ -168,15 +245,16 @@ export default function StockInsightModal(props: {
   const [miniHoverIdx, setMiniHoverIdx] = useState<number | null>(null)
   const [suggestions, setSuggestions] = useState<SuggestionInfo[]>([])
   const [news, setNews] = useState<NewsItem[]>([])
-  const [klineOpen, setKlineOpen] = useState(false)
-  const [klineInterval, setKlineInterval] = useState<'1d' | '1w' | '1m'>('1d')
-  const [klineDays, setKlineDays] = useState<'60' | '120' | '250'>('120')
-  const [replayFilter, setReplayFilter] = useState<'all' | 'trade' | 'alert'>('all')
+  const [reports, setReports] = useState<HistoryRecord[]>([])
+  const [reportTab, setReportTab] = useState<'premarket_outlook' | 'daily_report' | 'news_digest'>('premarket_outlook')
+  const [klineInterval] = useState<'1d' | '1w' | '1m'>('1d')
+  const [klineDays] = useState<'60' | '120' | '250'>('120')
   const [alerting, setAlerting] = useState(false)
   const [autoSuggesting, setAutoSuggesting] = useState(false)
   const [holdingAgg, setHoldingAgg] = useState<{
     quantity: number
     cost: number
+    unitCost: number
     marketValue: number
     pnl: number
   } | null>(null)
@@ -196,9 +274,10 @@ export default function StockInsightModal(props: {
     setKlineSummary(data?.summary || null)
   }, [symbol, market])
 
-  const loadMiniKline = useCallback(async () => {
+  const loadMiniKline = useCallback(async (opts?: { silent?: boolean }) => {
     if (!symbol) return
-    setMiniKlineLoading(true)
+    const silent = !!opts?.silent
+    if (!silent) setMiniKlineLoading(true)
     try {
       const data = await fetchAPI<MiniKlineResponse>(
         `/klines/${encodeURIComponent(symbol)}?market=${encodeURIComponent(market)}&days=36&interval=1d`
@@ -207,7 +286,7 @@ export default function StockInsightModal(props: {
     } catch {
       setMiniKlines([])
     } finally {
-      setMiniKlineLoading(false)
+      if (!silent) setMiniKlineLoading(false)
     }
   }, [symbol, market])
 
@@ -279,12 +358,37 @@ export default function StockInsightModal(props: {
           pnl += Number(p.pnl || 0)
         }
       }
-      if (quantity > 0) setHoldingAgg({ quantity, cost, marketValue, pnl })
+      if (quantity > 0) setHoldingAgg({ quantity, cost, unitCost: cost / quantity, marketValue, pnl })
       else setHoldingAgg(null)
     } catch {
       setHoldingAgg(null)
     }
   }, [symbol, market])
+
+  const loadReports = useCallback(async () => {
+    if (!symbol) return
+    try {
+      const agents = ['premarket_outlook', 'daily_report', 'news_digest']
+      const results = await Promise.all(
+        agents.map(agent =>
+          fetchAPI<HistoryRecord[]>(
+            `/history?agent_name=${encodeURIComponent(agent)}&stock_symbol=${encodeURIComponent(symbol)}&limit=1`
+          ).catch(() => [])
+        )
+      )
+      const merged = results
+        .flatMap(items => items || [])
+        .filter(Boolean)
+        .sort((a, b) => {
+          const am = parseToMs(a.created_at || a.analysis_date) || 0
+          const bm = parseToMs(b.created_at || b.analysis_date) || 0
+          return bm - am
+        })
+      setReports(merged)
+    } catch {
+      setReports([])
+    }
+  }, [symbol])
 
   const loadCore = useCallback(async () => {
     if (!symbol) return
@@ -302,19 +406,38 @@ export default function StockInsightModal(props: {
     if (!symbol) return
     setLoading(true)
     try {
-      await Promise.allSettled([loadQuote(), loadKline(), loadMiniKline(), loadSuggestions(), loadNews(), loadHoldingAgg()])
+      await Promise.allSettled([loadQuote(), loadKline(), loadMiniKline(), loadSuggestions(), loadNews(), loadHoldingAgg(), loadReports()])
     } catch (e) {
       toast(e instanceof Error ? e.message : '加载失败', 'error')
     } finally {
       setLoading(false)
     }
-  }, [symbol, loadQuote, loadKline, loadMiniKline, loadSuggestions, loadNews, loadHoldingAgg, toast])
+  }, [symbol, loadQuote, loadKline, loadMiniKline, loadSuggestions, loadNews, loadHoldingAgg, loadReports, toast])
+
+  const refreshForAuto = useCallback(async () => {
+    if (!symbol) return
+    const tasks: Promise<any>[] = [loadQuote(), loadHoldingAgg()]
+    if (tab === 'overview' || tab === 'kline') {
+      tasks.push(loadKline(), loadMiniKline({ silent: true }))
+    }
+    if (tab === 'overview' || tab === 'suggestions') {
+      tasks.push(loadSuggestions())
+    }
+    if (tab === 'overview' || tab === 'news') {
+      tasks.push(loadNews())
+    }
+    if (tab === 'overview' || tab === 'reports') {
+      tasks.push(loadReports())
+    }
+    await Promise.allSettled(tasks)
+  }, [symbol, tab, loadQuote, loadHoldingAgg, loadKline, loadMiniKline, loadSuggestions, loadNews, loadReports])
 
   useEffect(() => {
     if (!props.open || !symbol) return
     setTab('overview')
     setSuggestions([])
     setNews([])
+    setReports([])
     setMiniKlines([])
     loadCore()
   }, [props.open, symbol, market, loadCore])
@@ -329,33 +452,56 @@ export default function StockInsightModal(props: {
     loadSuggestions().catch(() => setSuggestions([]))
   }, [props.open, symbol, includeExpiredSuggestions, loadSuggestions])
 
-  const latestSuggestion = suggestions.find(s => !s.is_expired) || suggestions[0] || null
+  useEffect(() => {
+    if (!props.open || !symbol) return
+    loadReports().catch(() => setReports([]))
+  }, [props.open, symbol, loadReports])
+
+  useEffect(() => {
+    if (!props.open || !symbol || !autoRefreshEnabled) return
+    const sec = Number(autoRefreshSec) > 0 ? Number(autoRefreshSec) : 20
+    const ms = Math.max(10, sec) * 1000
+    const timer = setInterval(() => {
+      refreshForAuto().catch(() => undefined)
+    }, ms)
+    return () => clearInterval(timer)
+  }, [props.open, symbol, autoRefreshEnabled, autoRefreshSec, refreshForAuto])
+
   const hasHolding = !!props.hasPosition || !!holdingAgg
-  const technicalFallbackSuggestion = useMemo<SuggestionInfo | null>(() => {
+  const technicalScored = useMemo(() => {
     if (!klineSummary) return null
-    const scored = buildKlineSuggestion(klineSummary as any, hasHolding)
-    const topEvidence = (scored.evidence || []).filter(e => e.delta !== 0).slice(0, 3).map(e => e.text)
+    return buildKlineSuggestion(klineSummary as any, hasHolding)
+  }, [klineSummary, hasHolding])
+  const technicalFallbackSuggestion = useMemo<SuggestionInfo | null>(() => {
+    if (!klineSummary || !technicalScored) return null
+    const topEvidence = (technicalScored.evidence || []).filter(e => e.delta !== 0).slice(0, 3).map(e => e.text)
     return {
-      action: scored.action,
-      action_label: scored.action_label,
-      signal: scored.signal || '技术面中性',
+      action: technicalScored.action,
+      action_label: technicalScored.action_label,
+      signal: technicalScored.signal || '技术面中性',
       reason: topEvidence.length > 0 ? topEvidence.join('；') : '基于K线技术指标自动生成的基础建议',
-      should_alert: scored.action === 'buy' || scored.action === 'add' || scored.action === 'sell' || scored.action === 'reduce',
+      should_alert: technicalScored.action === 'buy' || technicalScored.action === 'add' || technicalScored.action === 'sell' || technicalScored.action === 'reduce',
       agent_name: 'technical_fallback',
       agent_label: '技术指标',
       created_at: new Date().toISOString(),
       is_expired: false,
       meta: {
         fallback: true,
-        score: scored.score,
-        evidence_count: scored.evidence?.length || 0,
+        score: technicalScored.score,
+        evidence_count: technicalScored.evidence?.length || 0,
       },
     }
-  }, [klineSummary, hasHolding])
-  const displaySuggestion = latestSuggestion || technicalFallbackSuggestion
+  }, [klineSummary, technicalScored])
   const quoteUp = (quote?.change_pct || 0) > 0
   const quoteDown = (quote?.change_pct || 0) < 0
-  const changeColor = quoteUp ? 'text-rose-500' : quoteDown ? 'text-emerald-500' : 'text-muted-foreground'
+  const changeColor = quoteUp ? 'text-rose-500' : quoteDown ? 'text-emerald-500' : 'text-foreground'
+  const priceColor = quoteUp ? 'text-rose-500' : quoteDown ? 'text-emerald-500' : 'text-foreground'
+  const levelColor = (value: number | null | undefined) => {
+    if (value == null || quote?.prev_close == null) return 'text-foreground'
+    if (value > quote.prev_close) return 'text-rose-500'
+    if (value < quote.prev_close) return 'text-emerald-500'
+    return 'text-foreground'
+  }
   const badge = marketBadge(market)
   const amplitudePct = useMemo(() => {
     const hi = quote?.high_price
@@ -364,67 +510,20 @@ export default function StockInsightModal(props: {
     if (hi == null || lo == null || pre == null || pre === 0) return null
     return ((hi - lo) / pre) * 100
   }, [quote?.high_price, quote?.low_price, quote?.prev_close])
-  const keyLevels = useMemo(() => {
-    if (!klineSummary) return null
-    const last = Number((klineSummary as any).last_close)
-    const support = klineSummary.support
-    const resistance = klineSummary.resistance
-    const distPct = (anchor: number | null | undefined) => {
-      if (anchor == null || !isFinite(last) || !last) return null
-      return ((anchor - last) / last) * 100
-    }
-    return {
-      last: isFinite(last) ? last : null,
-      support,
-      resistance,
-      toSupportPct: distPct(support),
-      toResistancePct: distPct(resistance),
-    }
-  }, [klineSummary])
 
-  const replayEvents = useMemo(() => {
-    const out: ReplayEvent[] = []
-    if ((klineSummary as any)?.computed_at) {
-      const ms = parseToMs((klineSummary as any).computed_at)
-      if (ms != null) {
-        out.push({
-          id: `tech-${ms}`,
-          ts: ms,
-          timeText: formatTime((klineSummary as any).computed_at),
-          label: '技术面快照',
-          desc: `${klineSummary?.trend || ''} ${klineSummary?.macd_status || ''}`.trim() || 'K线数据更新',
-          tone: 'neutral',
-          kind: 'technical',
-          isAlert: false,
-        })
-      }
+  const reportMap = useMemo(() => {
+    const out: Record<string, HistoryRecord | null> = {
+      premarket_outlook: null,
+      daily_report: null,
+      news_digest: null,
     }
-    for (const s of suggestions.slice(0, 12)) {
-      const ms = parseToMs(s.created_at)
-      if (ms == null) continue
-      const action = s.action_label || s.action || '建议'
-      const desc = s.signal || s.reason || '无附加说明'
-      const tone: ReplayEvent['tone'] = ['buy', 'add'].includes(s.action) ? 'bull' : ['sell', 'reduce', 'avoid'].includes(s.action) ? 'bear' : 'neutral'
-      out.push({
-        id: `s-${ms}-${action}`,
-        ts: ms,
-        timeText: formatTime(s.created_at),
-        label: action,
-        desc,
-        tone,
-        kind: 'suggestion',
-        isAlert: !!s.should_alert || ['sell', 'reduce', 'avoid', 'alert'].includes(s.action),
-      })
+    for (const r of reports) {
+      if (!out[r.agent_name]) out[r.agent_name] = r
     }
-    return out.sort((a, b) => b.ts - a.ts).slice(0, 8)
-  }, [klineSummary, suggestions])
-
-  const filteredReplayEvents = useMemo(() => {
-    if (replayFilter === 'all') return replayEvents
-    if (replayFilter === 'trade') return replayEvents.filter(evt => evt.kind === 'suggestion' && (evt.tone === 'bull' || evt.tone === 'bear'))
-    return replayEvents.filter(evt => evt.isAlert)
-  }, [replayEvents, replayFilter])
-
+    return out
+  }, [reports])
+  const activeReport = reportMap[reportTab]
+  const latestReport = reports[0] || null
   const handleSetAlert = async () => {
     if (!symbol) return
     setAlerting(true)
@@ -540,19 +639,10 @@ export default function StockInsightModal(props: {
     return { low, high }
   }, [miniKlines])
 
-  const miniDisplayCandle = useMemo(() => {
-    if (!miniKlines.length) return null
-    const idx = miniHoverIdx == null ? miniKlines.length - 1 : Math.max(0, Math.min(miniHoverIdx, miniKlines.length - 1))
-    const cur = miniKlines[idx]
-    const prev = idx > 0 ? miniKlines[idx - 1] : null
-    const changePct = prev && prev.close ? ((cur.close - prev.close) / prev.close) * 100 : null
-    return { ...cur, changePct, idx }
-  }, [miniKlines, miniHoverIdx])
-
   return (
     <>
       <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-        <DialogContent className="w-[92vw] max-w-6xl p-5 md:p-6">
+        <DialogContent className="w-[92vw] max-w-6xl p-5 md:p-6 overflow-x-hidden">
           <DialogHeader className="mb-3">
             <div className="flex items-start justify-between gap-3 pr-8">
               <div>
@@ -570,104 +660,128 @@ export default function StockInsightModal(props: {
                 <Button variant="outline" size="sm" className="h-8 px-2.5" onClick={() => handleRefreshAll()} disabled={loading}>
                   <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
                 </Button>
-                {props.onOpenFullDetail && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 px-2.5 gap-1.5"
-                    onClick={() => props.onOpenFullDetail?.(market, symbol)}
-                  >
-                    完整页 <ExternalLink className="w-3.5 h-3.5" />
-                  </Button>
-                )}
               </div>
             </div>
           </DialogHeader>
 
-          <div className="flex items-center gap-1 flex-wrap mb-3">
-            {[
-              { id: 'overview', label: '概览' },
-              { id: 'kline', label: 'K线' },
-              { id: 'suggestions', label: `建议 (${suggestions.length})` },
-              { id: 'news', label: `新闻 (${news.length})` },
-            ].map(item => (
-              <button
-                key={item.id}
-                onClick={() => setTab(item.id as InsightTab)}
-                className={`text-[11px] px-2.5 py-1 rounded transition-colors ${
-                  tab === item.id ? 'bg-primary text-primary-foreground' : 'bg-accent/50 text-muted-foreground hover:bg-accent'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
+          <div className="flex items-center justify-between gap-2 flex-wrap mb-3">
+            <div className="flex items-center gap-1 flex-wrap">
+              {[
+                { id: 'overview', label: '概览' },
+                { id: 'kline', label: 'K线' },
+                { id: 'suggestions', label: `建议 (${suggestions.length})` },
+                { id: 'news', label: `新闻 (${news.length})` },
+                { id: 'reports', label: `报告 (${reports.length})` },
+              ].map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => setTab(item.id as InsightTab)}
+                  className={`text-[11px] px-2.5 py-1 rounded transition-colors ${
+                    tab === item.id ? 'bg-primary text-primary-foreground' : 'bg-accent/50 text-muted-foreground hover:bg-accent'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">自动刷新</span>
+              <Switch
+                checked={autoRefreshEnabled}
+                onCheckedChange={setAutoRefreshEnabled}
+                aria-label="自动刷新"
+              />
+              <Select value={String(autoRefreshSec)} onValueChange={(v) => setAutoRefreshSec(Number(v))}>
+                <SelectTrigger className="h-7 w-[84px] text-[11px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="10">10秒</SelectItem>
+                  <SelectItem value="20">20秒</SelectItem>
+                  <SelectItem value="30">30秒</SelectItem>
+                  <SelectItem value="60">60秒</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
-          <div className="max-h-[68vh] overflow-y-auto pr-1 scrollbar">
+          <div className="max-h-[68vh] overflow-y-auto overflow-x-hidden pr-1 scrollbar">
             {tab === 'overview' && (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-                <div className="card p-4 lg:col-span-1">
-                  <div className="text-[12px] text-muted-foreground mb-1">实时行情</div>
-                  <div className="flex items-end justify-between gap-3">
-                    <div className="text-[28px] font-bold font-mono text-foreground">
-                      {quote?.current_price != null ? formatNumber(quote.current_price) : '--'}
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-stretch">
+                  <div className="card p-4 h-full">
+                    <div className="mt-1 flex items-end justify-between gap-3">
+                      <div className={`text-[34px] leading-none font-bold font-mono ${priceColor}`}>
+                        {quote?.current_price != null ? formatNumber(quote.current_price) : '--'}
+                      </div>
+                      <div className={`text-[16px] font-mono ${changeColor}`}>
+                        {quote?.change_pct != null ? `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%` : '--'}
+                      </div>
                     </div>
-                    <div className={`text-[14px] font-mono ${changeColor}`}>
-                      {quote?.change_pct != null ? `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%` : '--'}
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-[12px]">
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">今开</div><div className={`font-mono ${levelColor(quote?.open_price)}`}>{formatNumber(quote?.open_price)}</div></div>
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">最高</div><div className={`font-mono ${levelColor(quote?.high_price)}`}>{formatNumber(quote?.high_price)}</div></div>
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">最低</div><div className={`font-mono ${levelColor(quote?.low_price)}`}>{formatNumber(quote?.low_price)}</div></div>
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">成交量</div><div className="font-mono">{formatCompactNumber(quote?.volume)}</div></div>
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">成交额</div><div className="font-mono">{formatCompactNumber(quote?.turnover)}</div></div>
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">振幅</div><div className="font-mono">{amplitudePct != null ? `${amplitudePct.toFixed(2)}%` : '--'}</div></div>
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">换手率</div><div className="font-mono">{quote?.turnover_rate != null ? `${Number(quote.turnover_rate).toFixed(2)}%` : '--'}</div></div>
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">市盈率</div><div className="font-mono">{quote?.pe_ratio != null ? Number(quote.pe_ratio).toFixed(2) : '--'}</div></div>
+                      <div className="rounded bg-accent/15 px-2 py-1.5"><div className="text-[10px] text-muted-foreground">总市值</div><div className="font-mono">{formatMarketCap(quote?.total_market_value)}</div></div>
                     </div>
-                  </div>
-                  <div className="mt-3 space-y-1.5 text-[12px]">
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">今开</span><span className="font-mono">{formatNumber(quote?.open_price)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">最高</span><span className="font-mono">{formatNumber(quote?.high_price)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">最低</span><span className="font-mono">{formatNumber(quote?.low_price)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">成交量</span><span className="font-mono">{formatCompactNumber(quote?.volume)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">成交额</span><span className="font-mono">{formatCompactNumber(quote?.turnover)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">昨收</span><span className="font-mono">{formatNumber(quote?.prev_close)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">涨跌额</span><span className={`font-mono ${changeColor}`}>{formatNumber(quote?.change_amount)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">振幅</span><span className="font-mono">{amplitudePct != null ? `${amplitudePct.toFixed(2)}%` : '--'}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">总市值</span><span className="font-mono">{formatCompactNumber((quote as any)?.total_market_value)}</span></div>
-                    <div className="flex items-center justify-between"><span className="text-muted-foreground">流通市值</span><span className="font-mono">{formatCompactNumber((quote as any)?.circulating_market_value)}</span></div>
-                  </div>
-                  {holdingAgg && (
-                    <div className="mt-3 rounded-lg border border-border/40 bg-accent/20 p-2.5 space-y-1.5 text-[12px]">
-                      <div className="text-[11px] text-muted-foreground">我的持仓</div>
-                      <div className="flex items-center justify-between"><span className="text-muted-foreground">持仓数量</span><span className="font-mono">{holdingAgg.quantity}</span></div>
-                      <div className="flex items-center justify-between"><span className="text-muted-foreground">持仓成本</span><span className="font-mono">{formatCompactNumber(holdingAgg.cost)}</span></div>
-                      <div className="flex items-center justify-between"><span className="text-muted-foreground">持仓市值</span><span className="font-mono">{formatCompactNumber(holdingAgg.marketValue)}</span></div>
-                      <div className="flex items-center justify-between"><span className="text-muted-foreground">浮动盈亏</span><span className={`font-mono ${holdingAgg.pnl >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{holdingAgg.pnl >= 0 ? '+' : ''}{formatCompactNumber(holdingAgg.pnl)}</span></div>
-                    </div>
-                  )}
-                  {!holdingAgg && (
-                    <div className="mt-3 text-[11px] text-muted-foreground">未在持仓中</div>
-                  )}
-                </div>
-
-                <div className="card p-4 lg:col-span-1">
-                  <div className="text-[12px] text-muted-foreground mb-2">技术面快照</div>
-                  {!klineSummary ? (
-                    <div className="text-[12px] text-muted-foreground py-4">暂无K线摘要</div>
-                  ) : (
-                    <div className="space-y-3">
-                      <div className="rounded-lg border border-border/40 bg-accent/10 p-2.5">
-                        <div className="flex items-center justify-between gap-2 mb-1">
-                          <div className="text-[10px] text-muted-foreground">迷你K线（近30日）</div>
-                          {miniDisplayCandle && (
-                            <div className="text-[10px] text-muted-foreground font-mono">
-                              {miniDisplayCandle.date} · O {miniDisplayCandle.open.toFixed(2)} H {miniDisplayCandle.high.toFixed(2)} L {miniDisplayCandle.low.toFixed(2)} C {miniDisplayCandle.close.toFixed(2)}
-                              {miniDisplayCandle.changePct != null && (
-                                <span className={`ml-1 ${miniDisplayCandle.changePct >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
-                                  ({miniDisplayCandle.changePct >= 0 ? '+' : ''}{miniDisplayCandle.changePct.toFixed(2)}%)
-                                </span>
-                              )}
+                    <div className="mt-3 border-t border-border/50 pt-3">
+                      <div className="text-[11px] text-muted-foreground mb-2">持仓信息</div>
+                      {holdingAgg ? (
+                        <div className="grid grid-cols-2 gap-2 text-[12px]">
+                          <div className="rounded bg-emerald-500/10 px-2 py-1.5">
+                            <div className="text-[10px] text-muted-foreground">持仓数量</div>
+                            <div className="font-mono">{holdingAgg.quantity}</div>
+                          </div>
+                          <div className="rounded bg-emerald-500/10 px-2 py-1.5">
+                            <div className="text-[10px] text-muted-foreground">持仓成本(单价)</div>
+                            <div
+                              className={`font-mono ${
+                                quote?.current_price != null
+                                  ? quote.current_price > holdingAgg.unitCost
+                                    ? 'text-rose-500'
+                                    : quote.current_price < holdingAgg.unitCost
+                                      ? 'text-emerald-500'
+                                      : 'text-foreground'
+                                  : 'text-foreground'
+                              }`}
+                            >
+                              {formatNumber(holdingAgg.unitCost)}
                             </div>
-                          )}
+                          </div>
+                          <div className="rounded bg-emerald-500/10 px-2 py-1.5">
+                            <div className="text-[10px] text-muted-foreground">持仓市值</div>
+                            <div className="font-mono">{formatCompactNumber(holdingAgg.marketValue)}</div>
+                          </div>
+                          <div className="rounded bg-emerald-500/10 px-2 py-1.5">
+                            <div className="text-[10px] text-muted-foreground">总盈亏</div>
+                            <div className={`font-mono ${holdingAgg.pnl >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                              {holdingAgg.pnl >= 0 ? '+' : ''}{formatCompactNumber(holdingAgg.pnl)}
+                            </div>
+                          </div>
                         </div>
+                      ) : (
+                        <div className="text-[11px] text-muted-foreground">未在持仓中</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="card p-4 h-full">
+                    <div className="text-[12px] text-muted-foreground mb-2">迷你K线</div>
+                    {!klineSummary ? (
+                      <div className="text-[12px] text-muted-foreground py-8">暂无K线摘要</div>
+                    ) : (
+                      <>
                         {miniKlineLoading ? (
-                          <div className="h-20 rounded bg-accent/30 animate-pulse" />
+                          <div className="h-32 rounded bg-accent/30 animate-pulse" />
                         ) : miniKlines.length > 0 && miniKlineExtrema ? (
                           <svg
-                            viewBox="0 0 300 80"
-                            className="w-full h-20 cursor-pointer"
+                            viewBox="0 0 320 120"
+                            className="w-full h-32 cursor-pointer"
                             onClick={() => setTab('kline')}
                             onMouseLeave={() => setMiniHoverIdx(null)}
                             onMouseMove={(e) => {
@@ -678,12 +792,12 @@ export default function StockInsightModal(props: {
                               setMiniHoverIdx(Math.max(0, Math.min(miniKlines.length - 1, idx)))
                             }}
                           >
-                            <title>点击进入 K 线详情</title>
+                            <title>点击进入交互式K线</title>
                             {miniKlines.map((k, idx) => {
-                              const xStep = 300 / miniKlines.length
+                              const xStep = 320 / miniKlines.length
                               const x = xStep * idx + xStep / 2
                               const bodyW = Math.max(2, xStep * 0.5)
-                              const toY = (v: number) => 74 - ((v - miniKlineExtrema.low) / (miniKlineExtrema.high - miniKlineExtrema.low)) * 68
+                              const toY = (v: number) => 114 - ((v - miniKlineExtrema.low) / (miniKlineExtrema.high - miniKlineExtrema.low)) * 100
                               const yOpen = toY(Number(k.open))
                               const yClose = toY(Number(k.close))
                               const yHigh = toY(Number(k.high))
@@ -695,9 +809,7 @@ export default function StockInsightModal(props: {
                               const active = miniHoverIdx === idx
                               return (
                                 <g key={`${k.date}-${idx}`}>
-                                  {active && (
-                                    <rect x={x - xStep / 2} y={4} width={xStep} height={72} fill="rgba(59,130,246,0.10)" />
-                                  )}
+                                  {active && <rect x={x - xStep / 2} y={6} width={xStep} height={108} fill="rgba(59,130,246,0.10)" />}
                                   <line x1={x} y1={yHigh} x2={x} y2={yLow} stroke={color} strokeWidth="1" />
                                   <rect x={x - bodyW / 2} y={bodyTop} width={bodyW} height={bodyH} fill={color} rx="0.6" />
                                 </g>
@@ -705,178 +817,161 @@ export default function StockInsightModal(props: {
                             })}
                           </svg>
                         ) : (
-                          <div className="h-20 text-[11px] text-muted-foreground flex items-center justify-center">暂无迷你K线</div>
+                          <div className="h-32 text-[11px] text-muted-foreground flex items-center justify-center">暂无迷你K线</div>
                         )}
-                      </div>
-                      <div className="flex flex-wrap gap-2 text-[11px]">
-                        {klineSummary.trend && <span className="px-2 py-0.5 rounded bg-accent/50">{klineSummary.trend}</span>}
-                        {klineSummary.macd_status && <span className="px-2 py-0.5 rounded bg-accent/50">MACD {klineSummary.macd_status}</span>}
-                        {klineSummary.rsi_status && <span className="px-2 py-0.5 rounded bg-accent/50">RSI {klineSummary.rsi_status}</span>}
-                        {klineSummary.kline_pattern && <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-600">{klineSummary.kline_pattern}</span>}
-                      </div>
-                      <div className="grid grid-cols-2 gap-2 text-[12px]">
-                        <div className="flex items-center justify-between"><span className="text-muted-foreground">支撑</span><span className="font-mono text-emerald-600">{formatNumber(klineSummary.support)}</span></div>
-                        <div className="flex items-center justify-between"><span className="text-muted-foreground">压力</span><span className="font-mono text-rose-600">{formatNumber(klineSummary.resistance)}</span></div>
-                      </div>
-                      <Button variant="secondary" size="sm" className="h-8" onClick={() => setKlineOpen(true)}>
-                        打开交互K线
-                      </Button>
-                    </div>
-                  )}
+                        <div className="mt-2 rounded bg-accent/10 p-2.5">
+                          <TechnicalIndicatorStrip
+                            klineSummary={klineSummary}
+                            technicalSuggestion={technicalFallbackSuggestion}
+                            stockName={resolvedName}
+                            stockSymbol={symbol}
+                            market={market}
+                            hasPosition={!!props.hasPosition}
+                            score={Number(technicalScored?.score ?? 0)}
+                            evidence={technicalScored?.evidence || []}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
 
-                <div className="card p-4 lg:col-span-1">
-                  <div className="text-[12px] text-muted-foreground mb-2">最新建议</div>
-                  {displaySuggestion ? (
-                    <SuggestionBadge
-                      suggestion={displaySuggestion}
-                      stockName={resolvedName}
-                      stockSymbol={symbol}
-                      kline={klineSummary}
-                      hasPosition={!!props.hasPosition}
-                    />
-                  ) : (
-                    <div className="text-[12px] text-muted-foreground py-4">暂无建议</div>
-                  )}
-                  {!latestSuggestion && technicalFallbackSuggestion && (
-                    <div className="mt-2 text-[10px] text-muted-foreground">当前为技术指标基础建议，AI 建议生成后将自动更新</div>
-                  )}
-                  {autoSuggesting && (
-                    <div className="mt-2 text-[10px] text-primary">正在自动生成 AI 建议（通常 5-15 秒）...</div>
-                  )}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 items-stretch">
+                  <div className="card p-4 h-full flex flex-col">
+                    <div className="text-[12px] text-muted-foreground mb-2">AI建议</div>
+                    {suggestions.length > 0 ? (
+                      <div className="space-y-2">
+                        <SuggestionBadge
+                          suggestion={suggestions[0]}
+                          stockName={resolvedName}
+                          stockSymbol={symbol}
+                          market={market}
+                          hasPosition={!!props.hasPosition}
+                        />
+                        <div className="rounded bg-accent/10 p-2 text-[11px]">
+                          <div className="text-muted-foreground">核心判断</div>
+                          <div className="mt-1 text-foreground line-clamp-2">{suggestions[0].signal || suggestions[0].reason || '暂无说明'}</div>
+                          <div className="mt-1 text-muted-foreground">动作: {suggestions[0].action_label || suggestions[0].action || '--'}</div>
+                          <div className="mt-1 text-foreground line-clamp-2">依据: {suggestions[0].reason || '暂无补充依据'}</div>
+                          <div className="mt-1 text-muted-foreground">
+                            来源: {suggestions[0].agent_label || suggestions[0].agent_name || 'AI'}{suggestions[0].created_at ? ` · ${formatTime(suggestions[0].created_at)}` : ''}
+                          </div>
+                        </div>
+                        {suggestions.length > 1 && (
+                          <div className="rounded bg-accent/10 p-2 text-[11px]">
+                            <div className="text-muted-foreground mb-1">近期补充建议</div>
+                            {suggestions.slice(1, 3).map((item, idx) => (
+                              <div key={`${item.created_at || 'extra'}-${idx}`} className="line-clamp-1 text-foreground">
+                                {item.action_label || item.action} · {item.signal || item.reason || '--'}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="text-[10px] text-primary min-h-[14px]">{autoSuggesting ? '正在自动生成 AI 建议...' : ''}</div>
+                      </div>
+                    ) : (
+                      <div className="text-[12px] text-muted-foreground py-6">暂无 AI 建议</div>
+                    )}
+                    <Button variant="secondary" size="sm" className="h-8 mt-auto" onClick={() => setTab('suggestions')}>
+                      查看建议列表
+                    </Button>
+                  </div>
+
+                  <div className="card p-4 h-full flex flex-col">
+                    <div className="text-[12px] text-muted-foreground mb-2">新闻</div>
+                    <div className="flex-1 space-y-2">
+                      {news.length === 0 ? (
+                        <div className="text-[12px] text-muted-foreground py-6">暂无相关新闻</div>
+                      ) : (
+                        news.slice(0, 3).map((item, idx) => (
+                          <a
+                            key={`${item.publish_time || 'n'}-${idx}`}
+                            href={item.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="block rounded-lg border border-border/30 bg-accent/10 p-2.5 hover:bg-accent/20 transition-colors"
+                          >
+                            <div className="text-[12px] text-foreground line-clamp-2">{item.title}</div>
+                            <div className="mt-1 text-[10px] text-muted-foreground">{item.source_label || item.source} · {formatTime(item.publish_time)}</div>
+                          </a>
+                        ))
+                      )}
+                    </div>
+                    <Button variant="secondary" size="sm" className="h-8 mt-2" onClick={() => setTab('news')}>
+                      查看新闻列表
+                    </Button>
+                  </div>
+                  <div className="card p-4 h-full flex flex-col">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="text-[12px] text-muted-foreground">报告预览</div>
+                      <Button variant="secondary" size="sm" className="h-7 px-2.5 text-[11px]" onClick={() => setTab('reports')}>
+                        查看完整报告
+                      </Button>
+                    </div>
+                    {!latestReport ? (
+                      <div className="text-[12px] text-muted-foreground py-3">暂无报告</div>
+                    ) : (
+                      <div className="rounded-lg border border-border/30 bg-accent/10 p-2.5">
+                        <div className="text-[11px] text-muted-foreground">
+                          {AGENT_LABELS[latestReport.agent_name] || latestReport.agent_name} · {latestReport.analysis_date}
+                        </div>
+                        <div className="mt-1 text-[13px] font-medium line-clamp-1">{latestReport.title || '报告摘要'}</div>
+                        <div className="mt-1 text-[12px] text-foreground/90 line-clamp-3">{latestReport.content || '暂无报告内容'}</div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
 
             {tab === 'kline' && (
               <div className="card p-4">
-                {!klineSummary ? (
-                  <div className="text-[12px] text-muted-foreground py-8 text-center">暂无K线数据</div>
+                <InteractiveKline
+                  symbol={symbol}
+                  market={market}
+                  initialInterval={klineInterval}
+                  initialDays={klineDays}
+                />
+              </div>
+            )}
+
+            {tab === 'reports' && (
+              <div className="space-y-3">
+                <div className="card p-3">
+                  <div className="flex items-center gap-1">
+                    {([
+                      { key: 'premarket_outlook', label: '盘前' },
+                      { key: 'daily_report', label: '盘后' },
+                      { key: 'news_digest', label: '新闻' },
+                    ] as const).map(item => (
+                      <button
+                        key={item.key}
+                        onClick={() => setReportTab(item.key)}
+                        className={`text-[11px] px-2.5 py-1 rounded ${
+                          reportTab === item.key ? 'bg-primary text-primary-foreground' : 'bg-accent/60 text-muted-foreground hover:bg-accent'
+                        }`}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {!activeReport ? (
+                  <div className="card p-6 text-[12px] text-muted-foreground text-center">暂无报告</div>
                 ) : (
-                  <div className="space-y-3">
-                    <div className="text-[12px] text-muted-foreground">
-                      数据周期 {klineSummary.timeframe || '1d'}{klineSummary.asof ? ` · 截至 ${klineSummary.asof}` : ''}
+                  <div className="card p-4 space-y-3">
+                    <div className="text-[11px] text-muted-foreground">
+                      {AGENT_LABELS[activeReport.agent_name] || activeReport.agent_name} · {activeReport.analysis_date}
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="text-[11px] text-muted-foreground mr-1">周期</div>
-                      {[
-                        { key: '1d', label: '日K' },
-                        { key: '1w', label: '周K' },
-                        { key: '1m', label: '月K' },
-                      ].map(item => (
-                        <button
-                          key={item.key}
-                          onClick={() => setKlineInterval(item.key as '1d' | '1w' | '1m')}
-                          className={`text-[11px] px-2 py-1 rounded ${klineInterval === item.key ? 'bg-primary text-primary-foreground' : 'bg-accent/50 text-muted-foreground hover:bg-accent'}`}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
-                      <div className="text-[11px] text-muted-foreground ml-3 mr-1">范围</div>
-                      {[
-                        { key: '60', label: '60' },
-                        { key: '120', label: '120' },
-                        { key: '250', label: '250' },
-                      ].map(item => (
-                        <button
-                          key={item.key}
-                          onClick={() => setKlineDays(item.key as '60' | '120' | '250')}
-                          className={`text-[11px] px-2 py-1 rounded ${klineDays === item.key ? 'bg-primary text-primary-foreground' : 'bg-accent/50 text-muted-foreground hover:bg-accent'}`}
-                        >
-                          {item.label}天
-                        </button>
-                      ))}
-                    </div>
-                    <div className="flex flex-wrap gap-2 text-[11px]">
-                      {klineSummary.trend && <Badge variant="outline">{klineSummary.trend}</Badge>}
-                      {klineSummary.macd_status && <Badge variant="outline">MACD {klineSummary.macd_status}</Badge>}
-                      {klineSummary.rsi_status && <Badge variant="outline">RSI {klineSummary.rsi_status}</Badge>}
-                      {klineSummary.volume_trend && <Badge variant="outline">{klineSummary.volume_trend}</Badge>}
-                    </div>
-                    {keyLevels && (keyLevels.support != null || keyLevels.resistance != null) && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[12px]">
-                        {keyLevels.support != null && (
-                          <div className="rounded-lg bg-emerald-500/10 p-2">
-                            <div className="text-muted-foreground">支撑</div>
-                            <div className="font-mono text-emerald-700">
-                              {formatNumber(keyLevels.support)}
-                              {keyLevels.toSupportPct != null && (
-                                <span className="ml-1 text-[11px] text-muted-foreground">
-                                  ({keyLevels.toSupportPct >= 0 ? '+' : ''}{keyLevels.toSupportPct.toFixed(1)}%)
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                        {keyLevels.resistance != null && (
-                          <div className="rounded-lg bg-rose-500/10 p-2">
-                            <div className="text-muted-foreground">压力</div>
-                            <div className="font-mono text-rose-700">
-                              {formatNumber(keyLevels.resistance)}
-                              {keyLevels.toResistancePct != null && (
-                                <span className="ml-1 text-[11px] text-muted-foreground">
-                                  ({keyLevels.toResistancePct >= 0 ? '+' : ''}{keyLevels.toResistancePct.toFixed(1)}%)
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        )}
+                    <div className="text-[15px] font-medium">{activeReport.title || '报告摘要'}</div>
+                    {activeReport.suggestions && (activeReport.suggestions as any)?.[symbol]?.action_label && (
+                      <div className="text-[11px] inline-flex px-2 py-0.5 rounded bg-primary/10 text-primary">
+                        {(activeReport.suggestions as any)[symbol].action_label}
                       </div>
                     )}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[12px]">
-                      <div className="rounded-lg bg-accent/30 p-2"><div className="text-muted-foreground">MA5</div><div className="font-mono">{formatNumber(klineSummary.ma5)}</div></div>
-                      <div className="rounded-lg bg-accent/30 p-2"><div className="text-muted-foreground">MA20</div><div className="font-mono">{formatNumber(klineSummary.ma20)}</div></div>
-                      <div className="rounded-lg bg-accent/30 p-2"><div className="text-muted-foreground">量比</div><div className="font-mono">{formatNumber(klineSummary.volume_ratio)}</div></div>
-                      <div className="rounded-lg bg-accent/30 p-2"><div className="text-muted-foreground">振幅</div><div className="font-mono">{formatNumber(klineSummary.amplitude)}%</div></div>
+                    <div className="text-[13px] leading-6 whitespace-pre-wrap text-foreground/90">
+                      {activeReport.content || '暂无报告内容'}
                     </div>
-                    <div className="rounded-lg bg-accent/20 p-3">
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <div className="text-[11px] font-medium text-muted-foreground">最近信号回放</div>
-                        <div className="flex items-center gap-1">
-                          {[
-                            { key: 'all', label: '全部' },
-                            { key: 'trade', label: '交易动作' },
-                            { key: 'alert', label: '预警' },
-                          ].map(item => (
-                            <button
-                              key={item.key}
-                              onClick={() => setReplayFilter(item.key as 'all' | 'trade' | 'alert')}
-                              className={`text-[10px] px-2 py-0.5 rounded ${
-                                replayFilter === item.key ? 'bg-primary text-primary-foreground' : 'bg-accent/60 text-muted-foreground hover:bg-accent'
-                              }`}
-                            >
-                              {item.label}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                      {filteredReplayEvents.length === 0 ? (
-                        <div className="text-[11px] text-muted-foreground">暂无回放数据</div>
-                      ) : (
-                        <div className="space-y-1.5">
-                          {filteredReplayEvents.map(evt => (
-                            <div key={evt.id} className="flex items-start justify-between gap-3 text-[12px]">
-                              <div className="min-w-0">
-                                <div className="text-foreground">
-                                  <span className={`mr-1.5 px-1.5 py-0.5 rounded text-[10px] ${
-                                    evt.tone === 'bull'
-                                      ? 'bg-emerald-500/10 text-emerald-700'
-                                      : evt.tone === 'bear'
-                                        ? 'bg-rose-500/10 text-rose-700'
-                                        : 'bg-slate-500/10 text-slate-700'
-                                  }`}>{evt.label}</span>
-                                  <span className="line-clamp-1">{evt.desc}</span>
-                                </div>
-                              </div>
-                              <span className="shrink-0 text-[10px] text-muted-foreground">{evt.timeText}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <Button variant="secondary" size="sm" className="h-8" onClick={() => setKlineOpen(true)}>
-                      查看交互K线
-                    </Button>
                   </div>
                 )}
               </div>
@@ -961,15 +1056,6 @@ export default function StockInsightModal(props: {
         </DialogContent>
       </Dialog>
 
-      <KlineModal
-        open={klineOpen}
-        onOpenChange={setKlineOpen}
-        symbol={symbol}
-        market={market}
-        title={resolvedName ? `K线：${resolvedName}` : `K线：${symbol}`}
-        initialInterval={klineInterval}
-        initialDays={klineDays}
-      />
     </>
   )
 }
