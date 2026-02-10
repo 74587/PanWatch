@@ -536,7 +536,8 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
                             else None,
                         }
 
-                        # P1: event-driven gate (reduce AI calls)
+                        # 事件门禁仅保留为上下文信息，不阻断 AI 分析。
+                        # 产品策略：建议持续更新，通知层再做去重与降噪。
                         try:
                             if getattr(agent, "event_only", False):
                                 from src.core.intraday_event_gate import check_and_update
@@ -555,18 +556,10 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
                                         agent, "volume_alert_ratio", 2.0
                                     ),
                                 )
-                                if not decision.should_analyze:
-                                    item["suggestion"] = {
-                                        "action": "watch",
-                                        "action_label": "观望",
-                                        "signal": "",
-                                        "reason": "",
-                                        "should_alert": False,
-                                        "skipped": True,
-                                        "skip_reason": "no_event",
-                                    }
-                                    return
-                                data["event_gate"] = {"reasons": decision.reasons}
+                                data["event_gate"] = {
+                                    "reasons": decision.reasons,
+                                    "should_analyze": bool(decision.should_analyze),
+                                }
                         except Exception:
                             pass
 

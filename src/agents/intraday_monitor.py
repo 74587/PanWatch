@@ -795,7 +795,8 @@ class IntradayMonitorAgent(BaseAgent):
             if not data.get("stock_data"):
                 return None
 
-            # P1: event-driven gate (reduce AI calls)
+            # 事件门禁仅作为上下文信号，不阻断 AI 分析。
+            # 产品策略：建议持续刷新，通知再由 should_alert + throttle 控制降噪。
             if self.event_only:
                 try:
                     from src.core.intraday_event_gate import check_and_update
@@ -810,21 +811,10 @@ class IntradayMonitorAgent(BaseAgent):
                         price_threshold=self.price_alert_threshold,
                         volume_threshold=self.volume_alert_ratio,
                     )
-                    if not decision.should_analyze:
-                        logger.info(
-                            f"事件门禁: {stock_symbol} 无显著变化，跳过 AI 分析"
-                        )
-                        return AnalysisResult(
-                            agent_name=self.name,
-                            title=f"【{self.display_name}】{stock_symbol}",
-                            content="",
-                            raw_data={
-                                "skipped": True,
-                                "skip_reason": "no_event",
-                                "event_gate": {"reasons": decision.reasons},
-                            },
-                        )
-                    data["event_gate"] = {"reasons": decision.reasons}
+                    data["event_gate"] = {
+                        "reasons": decision.reasons,
+                        "should_analyze": bool(decision.should_analyze),
+                    }
                 except Exception as e:
                     logger.debug(f"事件门禁异常，继续分析: {e}")
 
