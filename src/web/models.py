@@ -332,3 +332,66 @@ class SuggestionFeedback(Base):
     )
     useful = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now(), index=True)
+
+
+class PriceAlertRule(Base):
+    """价格提醒规则"""
+
+    __tablename__ = "price_alert_rules"
+    __table_args__ = (
+        Index("ix_price_alert_enabled", "enabled"),
+        Index("ix_price_alert_stock_enabled", "stock_id", "enabled"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stock_id = Column(
+        Integer, ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False
+    )
+    name = Column(String, nullable=False, default="")
+    enabled = Column(Boolean, default=True)
+    condition_group = Column(JSON, default={})
+    market_hours_mode = Column(String, default="trading_only")  # always/trading_only
+    cooldown_minutes = Column(Integer, default=30)
+    max_triggers_per_day = Column(Integer, default=3)
+    repeat_mode = Column(String, default="repeat")  # once/repeat
+    expire_at = Column(DateTime, nullable=True)
+    notify_channel_ids = Column(JSON, default=[])
+    last_trigger_at = Column(DateTime, nullable=True)
+    last_trigger_price = Column(Float, nullable=True)
+    trigger_count_today = Column(Integer, default=0)
+    trigger_date = Column(String, default="")  # YYYY-MM-DD
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    stock = relationship("Stock")
+
+
+class PriceAlertHit(Base):
+    """价格提醒命中记录"""
+
+    __tablename__ = "price_alert_hits"
+    __table_args__ = (
+        Index("ix_price_alert_hits_rule_time", "rule_id", "trigger_time"),
+        UniqueConstraint(
+            "rule_id",
+            "trigger_bucket",
+            name="uq_price_alert_rule_bucket",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    rule_id = Column(
+        Integer, ForeignKey("price_alert_rules.id", ondelete="CASCADE"), nullable=False
+    )
+    stock_id = Column(
+        Integer, ForeignKey("stocks.id", ondelete="CASCADE"), nullable=False
+    )
+    trigger_time = Column(DateTime, server_default=func.now(), nullable=False)
+    trigger_bucket = Column(String, nullable=False, default="")  # YYYYMMDDHHMM
+    trigger_snapshot = Column(JSON, default={})
+    notify_success = Column(Boolean, default=False)
+    notify_error = Column(String, default="")
+    created_at = Column(DateTime, server_default=func.now())
+
+    rule = relationship("PriceAlertRule")
+    stock = relationship("Stock")

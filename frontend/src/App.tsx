@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom'
-import { Moon, Sun, TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, LogOut, Github } from 'lucide-react'
+import { Moon, Sun, TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, LogOut, Github, BellRing, MoreHorizontal } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
 import { fetchAPI, isAuthenticated, logout } from '@/lib/utils'
 import DashboardPage from '@/pages/Dashboard'
@@ -9,6 +9,7 @@ import AgentsPage from '@/pages/Agents'
 import SettingsPage from '@/pages/Settings'
 import DataSourcesPage from '@/pages/DataSources'
 import HistoryPage from '@/pages/History'
+import PriceAlertsPage from '@/pages/PriceAlerts'
 import LoginPage from '@/pages/Login'
 import LogsModal from '@/components/logs-modal'
 import AmbientBackground from '@/components/AmbientBackground'
@@ -20,9 +21,14 @@ const navItems = [
   { to: '/portfolio', icon: List, label: '持仓' },
   { to: '/agents', icon: Bot, label: 'Agent' },
   { to: '/history', icon: Clock, label: '历史' },
+  { to: '/alerts', icon: BellRing, label: '提醒' },
   { to: '/datasources', icon: Database, label: '数据源' },
   { to: '/settings', icon: Settings, label: '设置' },
 ]
+const desktopPrimaryNavItems = navItems.slice(0, 5)
+const desktopMoreNavItems = navItems.slice(5)
+const mobilePrimaryNavItems = [navItems[0], navItems[1], navItems[2], navItems[4]]
+const mobileMoreNavItems = [navItems[3], navItems[5], navItems[6]]
 
 // 认证守卫组件
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -64,7 +70,11 @@ function App() {
   const [logsOpen, setLogsOpen] = useState(false)
   const [upgradeOpen, setUpgradeOpen] = useState(false)
   const [upgradeInfo, setUpgradeInfo] = useState<{ latest: string; url: string } | null>(null)
+  const [desktopMoreOpen, setDesktopMoreOpen] = useState(false)
+  const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const checkedUpdateRef = useRef(false)
+  const desktopMoreRef = useRef<HTMLDivElement | null>(null)
+  const mobileMoreRef = useRef<HTMLDivElement | null>(null)
   const repoUrl = 'https://github.com/TNT-Likely/PanWatch'
 
   useEffect(() => {
@@ -94,6 +104,25 @@ function App() {
       .catch(() => {})
   }, [version])
 
+  useEffect(() => {
+    const onDocPointerDown = (e: PointerEvent) => {
+      const t = e.target as Node
+      if (desktopMoreOpen && desktopMoreRef.current && !desktopMoreRef.current.contains(t)) {
+        setDesktopMoreOpen(false)
+      }
+      if (mobileMoreOpen && mobileMoreRef.current && !mobileMoreRef.current.contains(t)) {
+        setMobileMoreOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', onDocPointerDown)
+    return () => document.removeEventListener('pointerdown', onDocPointerDown)
+  }, [desktopMoreOpen, mobileMoreOpen])
+
+  useEffect(() => {
+    setDesktopMoreOpen(false)
+    setMobileMoreOpen(false)
+  }, [location.pathname])
+
   // 登录页面不显示导航
   if (location.pathname === '/login') {
     return (
@@ -122,7 +151,7 @@ function App() {
 
             {/* Nav Links */}
             <nav className="flex items-center gap-1">
-              {navItems.map(({ to, icon: Icon, label }) => {
+              {desktopPrimaryNavItems.map(({ to, icon: Icon, label }) => {
                 const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
                 return (
                   <NavLink
@@ -150,6 +179,39 @@ function App() {
                   </NavLink>
                 )
               })}
+              <div className="relative" ref={desktopMoreRef}>
+                <button
+                  onClick={() => setDesktopMoreOpen(v => !v)}
+                  className={`relative px-3.5 py-2 rounded-xl text-[13px] font-medium transition-all flex items-center gap-1.5 ${
+                    desktopMoreNavItems.some(item => location.pathname.startsWith(item.to))
+                      ? 'text-foreground bg-[linear-gradient(135deg,hsl(var(--primary)/0.14),hsl(var(--primary)/0.04),hsl(var(--success)/0.06))] ring-1 ring-primary/20 shadow-[0_8px_24px_-18px_hsl(var(--primary)/0.55)]'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-accent'
+                  }`}
+                >
+                  <MoreHorizontal className="w-4 h-4" />
+                  更多
+                </button>
+                {desktopMoreOpen && (
+                  <div className="absolute right-0 mt-2 w-40 rounded-xl border border-border/60 bg-card/95 backdrop-blur p-1.5 shadow-xl">
+                    {desktopMoreNavItems.map(({ to, icon: Icon, label }) => {
+                      const isActive = location.pathname.startsWith(to)
+                      return (
+                        <NavLink
+                          key={to}
+                          to={to}
+                          onClick={() => setDesktopMoreOpen(false)}
+                          className={`flex items-center gap-2 px-2.5 py-2 rounded-lg text-[12px] transition-colors ${
+                            isActive ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-accent/60'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5" />
+                          {label}
+                        </NavLink>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
             </nav>
 
             {/* Theme Toggle & Logout */}
@@ -228,9 +290,9 @@ function App() {
       </div>
 
       {/* Mobile Bottom Nav */}
-      <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-card border-t border-border px-2 pb-[env(safe-area-inset-bottom)]">
+      <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-card border-t border-border px-2 pb-[env(safe-area-inset-bottom)]" ref={mobileMoreRef}>
         <div className="flex items-center justify-around h-14">
-          {navItems.map(({ to, icon: Icon, label }) => {
+          {mobilePrimaryNavItems.map(({ to, icon: Icon, label }) => {
             const isActive = to === '/' ? location.pathname === '/' : location.pathname.startsWith(to)
             return (
               <NavLink
@@ -247,7 +309,38 @@ function App() {
               </NavLink>
             )
           })}
+          <button
+            onClick={() => setMobileMoreOpen(v => !v)}
+            className={`flex flex-col items-center justify-center gap-0.5 px-2 py-1.5 rounded-xl transition-all min-w-[56px] ${
+              mobileMoreNavItems.some(item => location.pathname.startsWith(item.to))
+                ? 'text-primary bg-primary/8 ring-1 ring-primary/15'
+                : 'text-muted-foreground hover:bg-accent/30'
+            }`}
+          >
+            <MoreHorizontal className="w-5 h-5" />
+            <span className="text-[10px] font-medium">更多</span>
+          </button>
         </div>
+        {mobileMoreOpen && (
+          <div className="absolute bottom-[58px] right-2 w-40 rounded-xl border border-border/60 bg-card/95 backdrop-blur p-1.5 shadow-xl">
+            {mobileMoreNavItems.map(({ to, icon: Icon, label }) => {
+              const isActive = location.pathname.startsWith(to)
+              return (
+                <NavLink
+                  key={to}
+                  to={to}
+                  onClick={() => setMobileMoreOpen(false)}
+                  className={`flex items-center gap-2 px-2.5 py-2 rounded-lg text-[12px] transition-colors ${
+                    isActive ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-accent/60'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                  {label}
+                </NavLink>
+              )
+            })}
+          </div>
+        )}
       </nav>
 
       {/* Content */}
@@ -257,6 +350,7 @@ function App() {
           <Route path="/portfolio" element={<StocksPage />} />
           <Route path="/agents" element={<AgentsPage />} />
           <Route path="/history" element={<HistoryPage />} />
+          <Route path="/alerts" element={<PriceAlertsPage />} />
           <Route path="/datasources" element={<DataSourcesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

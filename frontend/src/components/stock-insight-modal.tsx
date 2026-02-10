@@ -10,6 +10,7 @@ import { useToast } from '@/components/ui/toast'
 import InteractiveKline from '@/components/InteractiveKline'
 import { KlineIndicators } from '@/components/kline-indicators'
 import { buildKlineSuggestion } from '@/lib/kline-scorer'
+import StockPriceAlertPanel from '@/components/stock-price-alert-panel'
 
 interface QuoteResponse {
   symbol: string
@@ -991,6 +992,7 @@ export default function StockInsightModal(props: {
                   <Copy className="w-3.5 h-3.5" />
                   <span className="hidden sm:inline">复制</span>
                 </Button>
+                <StockPriceAlertPanel mode="inline" symbol={symbol} market={market} stockName={resolvedName} />
                 <Button variant="secondary" size="sm" className="h-8 px-2.5" onClick={handleSetAlert} disabled={alerting}>
                   {alerting ? '设置中...' : '一键设提醒'}
                 </Button>

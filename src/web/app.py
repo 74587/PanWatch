@@ -21,6 +21,7 @@ from src.web.api import (
     templates,
     feedback,
     discovery,
+    price_alerts,
 )
 from src.web.api import insights
 from src.web.api.auth import get_current_user
@@ -117,6 +118,12 @@ app.include_router(
     discovery.router,
     prefix="/api/discovery",
     tags=["discovery"],
+    dependencies=protected,
+)
+app.include_router(
+    price_alerts.router,
+    prefix="/api/price-alerts",
+    tags=["price-alerts"],
     dependencies=protected,
 )
 

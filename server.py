@@ -24,6 +24,7 @@ from src.models.market import MarketCode
 from src.core.ai_client import AIClient
 from src.core.notifier import NotifierManager
 from src.core.scheduler import AgentScheduler
+from src.core.price_alert_scheduler import PriceAlertScheduler
 from src.core.agent_runs import record_agent_run
 from src.agents.base import AgentContext, PortfolioInfo, AccountInfo, PositionInfo
 from src.agents.daily_report import DailyReportAgent
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 # 全局 scheduler 实例，供 agents API 调用
 scheduler: AgentScheduler | None = None
+price_alert_scheduler: PriceAlertScheduler | None = None
 
 
 def setup_ssl():
@@ -1055,13 +1057,27 @@ async def lifespan(app):
 
     threading.Thread(target=refresh_stock_cache, daemon=True).start()
 
-    global scheduler
+    global scheduler, price_alert_scheduler
     scheduler = build_scheduler()
     scheduler.start()
     logger.info("Agent 调度器已启动")
+    try:
+        settings = Settings()
+        price_alert_scheduler = PriceAlertScheduler(
+            timezone=settings.app_timezone,
+            interval_seconds=60,
+        )
+        price_alert_scheduler.start()
+        logger.info("价格提醒调度器已启动")
+    except Exception as e:
+        logger.error(f"价格提醒调度器启动失败: {e}")
     yield
-    scheduler.shutdown()
-    logger.info("Agent 调度器已关闭")
+    if scheduler:
+        scheduler.shutdown()
+        logger.info("Agent 调度器已关闭")
+    if price_alert_scheduler:
+        price_alert_scheduler.shutdown()
+        logger.info("价格提醒调度器已关闭")
 
 
 # 模块级 app 实例，供 uvicorn reload 使用
