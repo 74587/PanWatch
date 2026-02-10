@@ -576,8 +576,8 @@ async def scan_intraday(analyze: bool = False, db: Session = Depends(get_db)):
                         suggestion["raw"] = response.strip()[:200]
 
                         item["suggestion"] = suggestion
-                        # 写入建议池（用于持仓页展示），避免频繁扫描导致“持有/观望”覆盖太久
-                        expires_hours = 4 if suggestion.get("should_alert", True) else 1
+                        # 写入建议池（用于持仓页展示），盘中建议固定 6 小时有效
+                        expires_hours = 6
                         save_suggestion(
                             stock_symbol=item["symbol"],
                             stock_name=item["name"] or "",

@@ -606,7 +606,7 @@ class IntradayMonitorAgent(BaseAgent):
             reason=suggestion.get("reason", ""),
             agent_name=self.name,
             agent_label=self.display_name,
-            expires_hours=4,  # 盘中建议 4 小时有效
+            expires_hours=6,  # 盘中建议 6 小时有效
             prompt_context=user_content,  # 保存 prompt 上下文
             ai_response=raw_content,  # 保存 AI 原始响应
             meta={

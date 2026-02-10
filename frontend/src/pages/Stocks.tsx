@@ -569,7 +569,8 @@ export default function StocksPage() {
         }
       }
       await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()))
-      setKlineSummaries(map)
+      // 增量合并：本轮单只失败时保留旧值，避免技术徽章闪断/消失
+      setKlineSummaries(prev => ({ ...prev, ...map }))
     })()
     klineRefreshInFlight.current = run
     try { await run } finally { klineRefreshInFlight.current = null }
@@ -579,7 +580,7 @@ export default function StocksPage() {
   const loadPoolSuggestions = useCallback(async () => {
     setPoolSuggestionsLoading(true)
     try {
-      const data = await fetchAPI<Record<string, PoolSuggestion>>('/suggestions')
+      const data = await fetchAPI<Record<string, PoolSuggestion>>('/suggestions?include_expired=true')
       setPoolSuggestions(data)
     } catch (e) {
       console.warn('加载建议池失败:', e)

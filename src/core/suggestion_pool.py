@@ -29,7 +29,7 @@ def _dedupe_window_minutes(agent_name: str) -> int:
 # Agent 有效期配置（小时）
 AGENT_EXPIRY_HOURS = {
     "premarket_outlook": 12,  # 盘前建议当日有效（约12小时）
-    "intraday_monitor": 4,  # 盘中建议4小时有效
+    "intraday_monitor": 6,  # 盘中建议6小时有效
     "daily_report": 16,  # 盘后建议隔夜有效（到次日开盘，约16小时）
     "news_digest": 12,  # 新闻速递建议半天有效
 }
@@ -41,7 +41,6 @@ AGENT_LABELS = {
     "daily_report": "盘后日报",
     "news_digest": "新闻速递",
 }
-
 
 def save_suggestion(
     stock_symbol: str,
