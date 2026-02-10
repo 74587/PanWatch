@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
@@ -37,6 +38,7 @@ class StockResponse(BaseModel):
     symbol: str
     name: str
     market: str
+    sort_order: int
     enabled: bool
     agents: list[StockAgentInfo] = []
 
@@ -55,12 +57,22 @@ class StockAgentUpdate(BaseModel):
     agents: list[StockAgentItem]
 
 
+class StockReorderItem(BaseModel):
+    id: int
+    sort_order: int
+
+
+class StockReorderRequest(BaseModel):
+    items: list[StockReorderItem]
+
+
 def _stock_to_response(stock: Stock) -> dict:
     return {
         "id": stock.id,
         "symbol": stock.symbol,
         "name": stock.name,
         "market": stock.market,
+        "sort_order": stock.sort_order or 0,
         "enabled": stock.enabled,
         "agents": [
             {
@@ -157,7 +169,7 @@ def refresh_list():
 
 @router.get("", response_model=list[StockResponse])
 def list_stocks(db: Session = Depends(get_db)):
-    stocks = db.query(Stock).all()
+    stocks = db.query(Stock).order_by(Stock.sort_order.asc(), Stock.id.asc()).all()
     return [_stock_to_response(s) for s in stocks]
 
 
@@ -204,11 +216,30 @@ def create_stock(stock: StockCreate, db: Session = Depends(get_db)):
     if existing:
         raise HTTPException(400, f"股票 {stock.symbol} 已存在")
 
-    db_stock = Stock(**stock.model_dump())
+    max_order = db.query(func.max(Stock.sort_order)).scalar() or 0
+    db_stock = Stock(**stock.model_dump(), sort_order=int(max_order) + 1)
     db.add(db_stock)
     db.commit()
     db.refresh(db_stock)
     return _stock_to_response(db_stock)
+
+
+@router.put("/reorder")
+def reorder_stocks(body: StockReorderRequest, db: Session = Depends(get_db)):
+    if not body.items:
+        return {"updated": 0}
+    ids = [int(x.id) for x in body.items]
+    rows = db.query(Stock).filter(Stock.id.in_(ids)).all()
+    row_map = {r.id: r for r in rows}
+    updated = 0
+    for item in body.items:
+        row = row_map.get(int(item.id))
+        if not row:
+            continue
+        row.sort_order = int(item.sort_order)
+        updated += 1
+    db.commit()
+    return {"updated": updated}
 
 
 @router.put("/{stock_id}", response_model=StockResponse)

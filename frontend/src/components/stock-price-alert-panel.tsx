@@ -154,10 +154,31 @@ export default function StockPriceAlertPanel(props: {
     }
   }, [market, symbol, toast])
 
+  const loadSummaryOnly = useCallback(async () => {
+    if (!symbol) return
+    try {
+      const ruleData = await fetchAPI<AlertRule[]>('/price-alerts')
+      const filtered = (ruleData || []).filter(r =>
+        String(r.stock_symbol || '').toUpperCase() === symbol.toUpperCase() &&
+        String(r.market || '').toUpperCase() === market
+      )
+      setRules(filtered)
+    } catch {
+      // summary preload failure should not block interaction
+    }
+  }, [market, symbol])
+
   useEffect(() => {
     if (!open) return
     load()
   }, [open, load])
+
+  useEffect(() => {
+    if (open) return
+    if (mode !== 'inline') return
+    if ((props.initialTotal ?? null) !== null) return
+    loadSummaryOnly()
+  }, [loadSummaryOnly, mode, open, props.initialTotal])
 
   const openCreate = async () => {
     const stockId = await ensureStockId()
@@ -233,14 +254,17 @@ export default function StockPriceAlertPanel(props: {
   }
 
   const trigger = mode === 'inline' ? (
-    <button
-      className="inline-flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border border-border/50 hover:border-primary/30 hover:text-primary transition-colors"
+    <Button
+      variant="secondary"
+      size="sm"
+      className="h-8 px-2.5"
       onClick={() => setOpen(true)}
       type="button"
+      title={shownSummary.total > 0 ? `提醒 ${shownSummary.enabled}/${shownSummary.total}` : '价格提醒'}
     >
       <Bell className="w-3.5 h-3.5" />
       提醒 {shownSummary.total > 0 ? `${shownSummary.enabled}/${shownSummary.total}` : '0'}
-    </button>
+    </Button>
   ) : (
     <button
       className="relative inline-flex items-center justify-center h-7 w-7 rounded-md hover:bg-accent/40 transition-colors"

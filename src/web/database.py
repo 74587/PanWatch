@@ -95,6 +95,17 @@ def _migrate(engine):
             "trading_style",
             "ALTER TABLE positions ADD COLUMN trading_style TEXT DEFAULT 'swing'",
         ),
+        # 排序字段：关注列表/持仓拖拽排序
+        (
+            "stocks",
+            "sort_order",
+            "ALTER TABLE stocks ADD COLUMN sort_order INTEGER DEFAULT 0",
+        ),
+        (
+            "positions",
+            "sort_order",
+            "ALTER TABLE positions ADD COLUMN sort_order INTEGER DEFAULT 0",
+        ),
         # 数据源增强
         (
             "data_sources",
@@ -118,6 +129,14 @@ def _migrate(engine):
             if not _has_column(conn, table, column):
                 conn.execute(text(sql))
                 conn.commit()
+
+        # 初始化排序字段（仅对未初始化数据）
+        if _has_column(conn, "stocks", "sort_order"):
+            conn.execute(text("UPDATE stocks SET sort_order = id WHERE sort_order IS NULL OR sort_order = 0"))
+            conn.commit()
+        if _has_column(conn, "positions", "sort_order"):
+            conn.execute(text("UPDATE positions SET sort_order = id WHERE sort_order IS NULL OR sort_order = 0"))
+            conn.commit()
 
         # Create new tables if missing (SQLite)
         if not _has_table(conn, "suggestion_feedback"):

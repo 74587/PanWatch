@@ -38,6 +38,7 @@ interface Stock {
   symbol: string
   name: string
   market: string
+  sort_order?: number
   enabled: boolean
   agents: StockAgentInfo[]
 }
@@ -52,6 +53,7 @@ interface Account {
 interface Position {
   id: number
   stock_id: number
+  sort_order?: number
   symbol: string
   name: string
   market: string
@@ -411,8 +413,87 @@ export default function StocksPage() {
   // Remove watchlist modal
   const [removeWatchStock, setRemoveWatchStock] = useState<Stock | null>(null)
   const [removingWatchStock, setRemovingWatchStock] = useState(false)
+  const [draggingWatchStockId, setDraggingWatchStockId] = useState<number | null>(null)
+  const [draggingPositionId, setDraggingPositionId] = useState<number | null>(null)
+  const [draggingPositionAccountId, setDraggingPositionAccountId] = useState<number | null>(null)
+  const watchDragSnapshotRef = useRef<Stock[] | null>(null)
+  const positionDragSnapshotRef = useRef<PortfolioSummary | null>(null)
 
   const { toast } = useToast()
+
+  const moveById = <T extends { id: number }>(list: T[], fromId: number, toId: number): T[] => {
+    const fromIdx = list.findIndex(x => x.id === fromId)
+    const toIdx = list.findIndex(x => x.id === toId)
+    if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return list
+    const next = [...list]
+    const [moved] = next.splice(fromIdx, 1)
+    next.splice(toIdx, 0, moved)
+    return next
+  }
+
+  const persistWatchlistOrder = useCallback(async (ordered: Stock[]) => {
+    const payload = ordered.map((s, idx) => ({ id: s.id, sort_order: idx + 1 }))
+    await fetchAPI('/stocks/reorder', {
+      method: 'PUT',
+      body: JSON.stringify({ items: payload }),
+    })
+  }, [])
+
+  const previewWatchlistReorder = useCallback((fromId: number, toId: number) => {
+    if (fromId === toId) return
+    setStocks(prev => {
+      const enabled = prev.filter(s => s.enabled).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || a.id - b.id)
+      const disabled = prev.filter(s => !s.enabled).sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || a.id - b.id)
+      const movedEnabled = moveById(enabled, fromId, toId)
+      const nextEnabled = movedEnabled.map((s, idx) => ({ ...s, sort_order: idx + 1 }))
+      const nextDisabled = disabled.map((s, idx) => ({ ...s, sort_order: nextEnabled.length + idx + 1 }))
+      return [...nextEnabled, ...nextDisabled]
+    })
+  }, [])
+
+  const commitWatchlistReorder = useCallback(async () => {
+    const current = stocks
+    if (!current || current.length === 0) return
+    try {
+      await persistWatchlistOrder(current)
+    } catch (e) {
+      if (watchDragSnapshotRef.current) setStocks(watchDragSnapshotRef.current)
+      toast(e instanceof Error ? e.message : '保存关注排序失败', 'error')
+    }
+  }, [persistWatchlistOrder, stocks, toast])
+
+  const persistPositionOrder = useCallback(async (ordered: Position[]) => {
+    const payload = ordered.map((p, idx) => ({ id: p.id, sort_order: idx + 1 }))
+    await fetchAPI('/positions/reorder/batch', {
+      method: 'PUT',
+      body: JSON.stringify({ items: payload }),
+    })
+  }, [])
+
+  const previewPositionReorder = useCallback((accountId: number, fromId: number, toId: number) => {
+    if (fromId === toId) return
+    setPortfolioRaw(prev => {
+      if (!prev) return prev
+      const accountsNext = prev.accounts.map(acc => {
+        if (acc.id !== accountId) return acc
+        const moved = moveById(acc.positions || [], fromId, toId).map((p, idx) => ({ ...p, sort_order: idx + 1 }))
+        return { ...acc, positions: moved }
+      })
+      return { ...prev, accounts: accountsNext }
+    })
+  }, [])
+
+  const commitPositionReorder = useCallback(async (accountId: number) => {
+    const acc = portfolioRaw?.accounts?.find(a => a.id === accountId)
+    const ordered = acc?.positions || []
+    if (!ordered.length) return
+    try {
+      await persistPositionOrder(ordered)
+    } catch (e) {
+      if (positionDragSnapshotRef.current) setPortfolioRaw(positionDragSnapshotRef.current)
+      toast(e instanceof Error ? e.message : '保存持仓排序失败', 'error')
+    }
+  }, [persistPositionOrder, portfolioRaw, toast])
 
   const isSuppressCardClick = () => {
     try {
@@ -1783,7 +1864,38 @@ export default function StocksPage() {
                                 ? (pos.pnl > 0 ? 'text-rose-500' : pos.pnl < 0 ? 'text-emerald-500' : 'text-muted-foreground')
                                 : 'text-muted-foreground'
                               return (
-                                <tr key={pos.id} className={`group hover:bg-accent/30 transition-colors ${i > 0 ? 'border-t border-border/20' : ''}`}>
+                                <tr
+                                  key={pos.id}
+                                  draggable
+                                  onDragStart={(e) => {
+                                    positionDragSnapshotRef.current = portfolioRaw ? JSON.parse(JSON.stringify(portfolioRaw)) : null
+                                    setDraggingPositionId(pos.id)
+                                    setDraggingPositionAccountId(account.id)
+                                    e.dataTransfer.effectAllowed = 'move'
+                                  }}
+                                  onDragOver={(e) => {
+                                    e.preventDefault()
+                                    e.dataTransfer.dropEffect = 'move'
+                                    if (draggingPositionId != null && draggingPositionAccountId === account.id) {
+                                      previewPositionReorder(account.id, draggingPositionId, pos.id)
+                                    }
+                                  }}
+                                  onDrop={(e) => {
+                                    e.preventDefault()
+                                    if (draggingPositionId != null && draggingPositionAccountId === account.id) {
+                                      commitPositionReorder(account.id)
+                                    }
+                                    setDraggingPositionId(null)
+                                    setDraggingPositionAccountId(null)
+                                    positionDragSnapshotRef.current = null
+                                  }}
+                                  onDragEnd={() => {
+                                    setDraggingPositionId(null)
+                                    setDraggingPositionAccountId(null)
+                                    positionDragSnapshotRef.current = null
+                                  }}
+                                  className={`group hover:bg-accent/30 transition-colors ${i > 0 ? 'border-t border-border/20' : ''} ${draggingPositionId === pos.id ? 'opacity-60' : ''}`}
+                                >
                                   <td className="px-4 py-2.5">
                                     <span className={`text-[9px] px-1 py-0.5 rounded mr-1.5 ${badge.style}`}>{badge.label}</span>
                                     <span className="font-mono text-[12px] font-semibold text-foreground">
@@ -1914,7 +2026,38 @@ export default function StocksPage() {
                             ? (pos.pnl > 0 ? 'text-rose-500' : pos.pnl < 0 ? 'text-emerald-500' : 'text-muted-foreground')
                             : 'text-muted-foreground'
                           return (
-                            <div key={pos.id} className="p-3 hover:bg-accent/30 transition-colors">
+                            <div
+                              key={pos.id}
+                              draggable
+                              onDragStart={(e) => {
+                                positionDragSnapshotRef.current = portfolioRaw ? JSON.parse(JSON.stringify(portfolioRaw)) : null
+                                setDraggingPositionId(pos.id)
+                                setDraggingPositionAccountId(account.id)
+                                e.dataTransfer.effectAllowed = 'move'
+                              }}
+                              onDragOver={(e) => {
+                                e.preventDefault()
+                                e.dataTransfer.dropEffect = 'move'
+                                if (draggingPositionId != null && draggingPositionAccountId === account.id) {
+                                  previewPositionReorder(account.id, draggingPositionId, pos.id)
+                                }
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault()
+                                if (draggingPositionId != null && draggingPositionAccountId === account.id) {
+                                  commitPositionReorder(account.id)
+                                }
+                                setDraggingPositionId(null)
+                                setDraggingPositionAccountId(null)
+                                positionDragSnapshotRef.current = null
+                              }}
+                              onDragEnd={() => {
+                                setDraggingPositionId(null)
+                                setDraggingPositionAccountId(null)
+                                positionDragSnapshotRef.current = null
+                              }}
+                              className={`p-3 hover:bg-accent/30 transition-colors ${draggingPositionId === pos.id ? 'opacity-60' : ''}`}
+                            >
                               {/* Row 1: Stock info + Current price */}
                               <div className="flex items-center justify-between mb-2">
                                 <div className="flex items-center gap-1.5 flex-wrap">
@@ -2075,26 +2218,13 @@ export default function StocksPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {stocks
                 .filter(s => s.enabled && (!stockListFilter || s.market === stockListFilter))
-                .map(stock => {
-                  const quote = getStockQuote(stock.symbol)
-                  const { suggestion, kline } = getSuggestionForStock(stock.symbol, stock.market, false)
-                  const action = suggestion?.action || ''
-                  const aiPriority = suggestion?.agent_label && suggestion.agent_label !== '技术指标'
-                    ? (['sell', 'reduce', 'avoid', 'alert'].includes(action) ? 30 : 20)
-                    : 0
-                  const techPriority = !aiPriority && kline
-                    ? (['sell', 'reduce', 'avoid', 'alert'].includes(buildKlineSuggestion(kline as any, false).action) ? 10 : 0)
-                    : 0
-                  const movePriority = quote?.change_pct != null ? Math.min(9, Math.floor(Math.abs(quote.change_pct))) : 0
-                  const alertPriority = suggestion?.should_alert ? 100 : 0
-                  return { stock, quote, suggestion, kline, _p: alertPriority + aiPriority + techPriority + movePriority }
-                })
-                .filter(({ suggestion }) => {
+                .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || a.id - b.id)
+                .filter(stock => {
                   if (!watchlistOnlyAlerts) return true
+                  const { suggestion } = getSuggestionForStock(stock.symbol, stock.market, false)
                   return !!suggestion?.should_alert
                 })
-                .sort((a, b) => b._p - a._p)
-                .map(({ stock }) => {
+                .map((stock) => {
                 const quote = getStockQuote(stock.symbol)
                 const changeColor = quote?.change_pct != null
                   ? (quote.change_pct > 0 ? 'text-rose-500' : quote.change_pct < 0 ? 'text-emerald-500' : 'text-muted-foreground')
@@ -2103,7 +2233,33 @@ export default function StocksPage() {
                 return (
                   <div
                     key={stock.id}
-                    className="group rounded-xl border border-border/40 bg-background/30 hover:bg-accent/20 transition-colors p-3 cursor-pointer"
+                    draggable={stockListFilter === '' && !watchlistOnlyAlerts}
+                    onDragStart={(e) => {
+                      if (stockListFilter !== '' || watchlistOnlyAlerts) return
+                      watchDragSnapshotRef.current = stocks
+                      setDraggingWatchStockId(stock.id)
+                      e.dataTransfer.effectAllowed = 'move'
+                    }}
+                    onDragOver={(e) => {
+                      if (stockListFilter !== '' || watchlistOnlyAlerts) return
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'move'
+                      if (draggingWatchStockId != null) {
+                        previewWatchlistReorder(draggingWatchStockId, stock.id)
+                      }
+                    }}
+                    onDrop={(e) => {
+                      if (stockListFilter !== '' || watchlistOnlyAlerts) return
+                      e.preventDefault()
+                      if (draggingWatchStockId != null) commitWatchlistReorder()
+                      setDraggingWatchStockId(null)
+                      watchDragSnapshotRef.current = null
+                    }}
+                    onDragEnd={() => {
+                      setDraggingWatchStockId(null)
+                      watchDragSnapshotRef.current = null
+                    }}
+                    className={`group rounded-xl border border-border/40 bg-background/30 hover:bg-accent/20 transition-colors p-3 cursor-pointer ${draggingWatchStockId === stock.id ? 'opacity-60' : ''}`}
                     onClick={() => {
                       if (isSuppressCardClick()) return
                       setAgentDialogStock(stock)

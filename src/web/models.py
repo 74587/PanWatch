@@ -89,6 +89,7 @@ class Stock(Base):
     cost_price = Column(Float, nullable=True)
     quantity = Column(Integer, nullable=True)
     invested_amount = Column(Float, nullable=True)
+    sort_order = Column(Integer, default=0)
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
@@ -119,6 +120,7 @@ class Position(Base):
     cost_price = Column(Float, nullable=False)  # 成本价
     quantity = Column(Integer, nullable=False)  # 持仓数量
     invested_amount = Column(Float, nullable=True)  # 投入资金（用于盘中监控）
+    sort_order = Column(Integer, default=0)
     trading_style = Column(
         String, default="swing"
     )  # short: 短线, swing: 波段, long: 长线

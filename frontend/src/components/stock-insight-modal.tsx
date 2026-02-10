@@ -180,14 +180,28 @@ function marketBadge(market: string) {
 function parseSuggestionJson(raw: unknown): Record<string, any> | null {
   if (typeof raw !== 'string') return null
   const s = raw.trim()
-  if (!s.startsWith('{') || !s.endsWith('}')) return null
-  try {
-    const obj = JSON.parse(s)
-    if (obj && typeof obj === 'object') return obj as Record<string, any>
-    return null
-  } catch {
-    return null
+  if (!s) return null
+  const candidates: string[] = [s]
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence?.[1]) candidates.unshift(fence[1].trim())
+  if (/^json\s*[\r\n]/i.test(s)) candidates.unshift(s.replace(/^json\s*[\r\n]/i, '').trim())
+  for (const c of candidates) {
+    if (!c) continue
+    const direct = c
+    const sliceStart = c.indexOf('{')
+    const sliceEnd = c.lastIndexOf('}')
+    const sliced = sliceStart >= 0 && sliceEnd > sliceStart ? c.slice(sliceStart, sliceEnd + 1) : ''
+    for (const text of [direct, sliced]) {
+      if (!text || !text.startsWith('{') || !text.endsWith('}')) continue
+      try {
+        const obj = JSON.parse(text)
+        if (obj && typeof obj === 'object') return obj as Record<string, any>
+      } catch {
+        // try next candidate
+      }
+    }
   }
+  return null
 }
 
 function normalizeSuggestionAction(action?: string, actionLabel?: string): string {
@@ -211,6 +225,36 @@ function pickSuggestionText(raw: unknown, field: 'signal' | 'reason'): string {
     return ''
   }
   return plain
+}
+
+function normalizeTextList(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map(x => String(x || '').trim()).filter(Boolean)
+  const s = String(raw || '').trim()
+  if (!s) return []
+  const bySep = s.split(/[；;、|]/).map(x => x.trim()).filter(Boolean)
+  return bySep.length > 1 ? bySep : [s]
+}
+
+function firstNonEmptyText(...vals: unknown[]): string {
+  for (const v of vals) {
+    const s = String(v || '').trim()
+    if (s) return s
+  }
+  return ''
+}
+
+function buildShareTechnicalRisks(kline: KlineSummary | null): string[] {
+  if (!kline) return []
+  const out: string[] = []
+  const rsi = String(kline.rsi_status || '')
+  const macd = `${kline.macd_cross || ''} ${kline.macd_status || ''}`
+  const vol = String(kline.volume_trend || '')
+  if (rsi.includes('超买')) out.push('短线过热回撤风险')
+  if (rsi.includes('超卖')) out.push('弱势延续风险')
+  if (macd.includes('死叉')) out.push('趋势转弱风险')
+  if (macd.includes('顶背离')) out.push('动能背离风险')
+  if (vol.includes('放量')) out.push('波动放大风险')
+  return out.slice(0, 3)
 }
 
 function TechnicalIndicatorStrip(props: {
@@ -277,7 +321,8 @@ export default function StockInsightModal(props: {
   const market = String(props.market || 'CN').trim().toUpperCase()
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState<InsightTab>('overview')
-  const [newsHours, setNewsHours] = useState('168')
+  const [newsHours, setNewsHours] = useLocalStorage<string>('stock_insight_news_hours', '168')
+  const [announcementHours, setAnnouncementHours] = useLocalStorage<string>('stock_insight_announcement_hours', '168')
   const [includeExpiredSuggestions, setIncludeExpiredSuggestions] = useLocalStorage<boolean>(
     'stock_insight_include_expired_suggestions',
     true
@@ -451,7 +496,7 @@ export default function StockInsightModal(props: {
     try {
       const runQuery = async (opts: { useName: boolean; filterRelated: boolean }) => {
         const params = new URLSearchParams()
-        params.set('hours', newsHours)
+        params.set('hours', announcementHours)
         params.set('limit', '50')
         if (!opts.filterRelated) params.set('filter_related', 'false')
         params.set('source', 'eastmoney')
@@ -471,7 +516,7 @@ export default function StockInsightModal(props: {
       }
       if ((data || []).length === 0) {
         const global = await fetchAPI<NewsItem[]>(
-          `/news?hours=${encodeURIComponent(newsHours)}&limit=80&source=eastmoney`
+          `/news?hours=${encodeURIComponent(announcementHours)}&limit=80&source=eastmoney`
         ).catch(() => [])
         const upperSymbol = symbol.toUpperCase()
         const name = (resolvedName || '').trim()
@@ -486,7 +531,7 @@ export default function StockInsightModal(props: {
     } catch {
       setAnnouncements([])
     }
-  }, [symbol, newsHours, resolvedName])
+  }, [symbol, announcementHours, resolvedName])
 
   const loadHoldingAgg = useCallback(async () => {
     if (!symbol) return
@@ -631,7 +676,7 @@ export default function StockInsightModal(props: {
   useEffect(() => {
     if (!props.open || !symbol) return
     loadAnnouncements().catch(() => setAnnouncements([]))
-  }, [props.open, symbol, newsHours, loadAnnouncements])
+  }, [props.open, symbol, announcementHours, loadAnnouncements])
 
   useEffect(() => {
     if (!props.open || !symbol) return
@@ -712,14 +757,68 @@ export default function StockInsightModal(props: {
   const latestReport = reports[0] || null
   const latestShareSuggestion = suggestions[0] || technicalFallbackSuggestion
   const shareCardPayload = useMemo(() => {
+    const jsonSources = [
+      parseSuggestionJson((latestShareSuggestion as any)?.signal),
+      parseSuggestionJson((latestShareSuggestion as any)?.reason),
+      parseSuggestionJson((latestShareSuggestion as any)?.raw),
+      parseSuggestionJson((latestShareSuggestion as any)?.ai_response),
+      parseSuggestionJson((latestShareSuggestion as any)?.prompt_context),
+      (latestShareSuggestion as any)?.meta && typeof (latestShareSuggestion as any).meta === 'object'
+        ? ((latestShareSuggestion as any).meta as Record<string, any>)
+        : null,
+    ].filter(Boolean) as Array<Record<string, any>>
+    const pickFromJson = (...keys: string[]) => {
+      for (const obj of jsonSources) {
+        for (const key of keys) {
+          const s = String(obj?.[key] || '').trim()
+          if (s) return s
+        }
+      }
+      return ''
+    }
+    const pickListFromJson = (...keys: string[]) => {
+      for (const obj of jsonSources) {
+        for (const key of keys) {
+          const list = normalizeTextList(obj?.[key])
+          if (list.length > 0) return list
+        }
+      }
+      return [] as string[]
+    }
     const marketLabel = badge.label
     const price = quote?.current_price != null ? formatNumber(quote.current_price) : '--'
     const chg = quote?.change_pct != null ? `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%` : '--'
     const action = latestShareSuggestion?.action_label || latestShareSuggestion?.action || '暂无'
-    const signal = latestShareSuggestion?.signal || '--'
-    const reason = latestShareSuggestion?.reason || '--'
-    const rawRisks = (latestShareSuggestion as any)?.meta?.risks
-    const risks = Array.isArray(rawRisks) && rawRisks.length > 0 ? rawRisks.slice(0, 2).join('；') : '--'
+    const signal = firstNonEmptyText(
+      latestShareSuggestion?.signal,
+      pickFromJson('signal', 'summary', 'core_view'),
+      technicalScored?.signal,
+      '技术面中性'
+    ) || '--'
+    const reason = firstNonEmptyText(
+      latestShareSuggestion?.reason,
+      pickFromJson('reason', 'thesis', 'core_judgement', 'core_judgment', 'analysis'),
+      technicalFallbackSuggestion?.reason,
+      '暂无'
+    ) || '--'
+    const risksList = [
+      ...normalizeTextList((latestShareSuggestion as any)?.meta?.risks),
+      ...pickListFromJson('risks', 'risk', 'risk_points'),
+      ...buildShareTechnicalRisks(klineSummary),
+    ].filter(Boolean)
+    const dedupRisks = Array.from(new Set(risksList))
+    const risks = dedupRisks.length > 0 ? dedupRisks.slice(0, 2).join('；') : '市场波动风险'
+    const triggerList = pickListFromJson('triggers', 'trigger', 'signals')
+    const invalidList = pickListFromJson('invalidations', 'invalidation', 'stop_conditions')
+    const trigger = triggerList.length > 0 ? triggerList.slice(0, 2).join('；') : '--'
+    const invalidation = invalidList.length > 0 ? invalidList.slice(0, 2).join('；') : '--'
+    const technicalBrief = firstNonEmptyText(
+      [klineSummary?.trend, klineSummary?.macd_status, klineSummary?.rsi_status].filter(Boolean).join(' / '),
+      technicalScored?.signal
+    ) || '--'
+    const levelsBrief = (klineSummary?.support != null && klineSummary?.resistance != null)
+      ? `支撑 ${formatNumber(klineSummary.support)} / 压力 ${formatNumber(klineSummary.resistance)}`
+      : '--'
     const source = latestShareSuggestion?.agent_label || latestShareSuggestion?.agent_name || '技术指标'
     const ts = new Date().toLocaleString('zh-CN', {
       year: 'numeric',
@@ -729,12 +828,12 @@ export default function StockInsightModal(props: {
       minute: '2-digit',
       hour12: false,
     })
-    return { marketLabel, price, chg, action, signal, reason, risks, source, ts }
-  }, [badge.label, latestShareSuggestion, quote?.change_pct, quote?.current_price])
+    return { marketLabel, price, chg, action, signal, reason, risks, trigger, invalidation, technicalBrief, levelsBrief, source, ts }
+  }, [badge.label, klineSummary, latestShareSuggestion, quote?.change_pct, quote?.current_price, technicalFallbackSuggestion?.reason, technicalScored?.signal])
 
   const shareText = useMemo(() => {
-    const { marketLabel, price, chg, action, signal, reason, risks, source, ts } = shareCardPayload
-    return [
+    const { marketLabel, price, chg, action, signal, reason, risks, trigger, invalidation, technicalBrief, levelsBrief, source, ts } = shareCardPayload
+    const lines = [
       `【PanWatch 洞察】${resolvedName}（${symbol} · ${marketLabel}）`,
       `时间：${ts}`,
       `现价：${price}（${chg}）`,
@@ -742,8 +841,13 @@ export default function StockInsightModal(props: {
       `信号：${signal}`,
       `理由：${reason}`,
       `风险：${risks}`,
+      `技术：${technicalBrief}`,
+      `关键位：${levelsBrief}`,
       `来源：${source}`,
-    ].join('\n')
+    ]
+    if (trigger !== '--') lines.splice(7, 0, `触发：${trigger}`)
+    if (invalidation !== '--') lines.splice(8, 0, `失效：${invalidation}`)
+    return lines.join('\n')
   }, [shareCardPayload, resolvedName, symbol])
 
   const handleExportShareImage = useCallback(async () => {
@@ -760,7 +864,7 @@ export default function StockInsightModal(props: {
 
     setImageExporting(true)
     try {
-      const { marketLabel, price, chg, action, signal, reason, risks, source, ts } = shareCardPayload
+      const { marketLabel, price, chg, action, signal, reason, risks, technicalBrief, levelsBrief, source, ts } = shareCardPayload
       const up = (quote?.change_pct || 0) >= 0
       const changeColor = up ? '#ef4444' : '#10b981'
       const svg = `
@@ -772,7 +876,7 @@ export default function StockInsightModal(props: {
     </linearGradient>
   </defs>
   <rect x="0" y="0" width="1200" height="630" fill="url(#bg)"/>
-  <rect x="40" y="40" width="1120" height="550" rx="22" fill="#0f172a" stroke="#1f2937"/>
+  <rect x="40" y="30" width="1120" height="570" rx="22" fill="#0f172a" stroke="#1f2937"/>
   <text x="76" y="104" fill="#93c5fd" font-size="26" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">PanWatch 洞察</text>
   <text x="76" y="150" fill="#f8fafc" font-size="42" font-weight="700" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">${esc(trim(`${resolvedName}（${symbol} · ${marketLabel}）`, 28))}</text>
   <text x="76" y="198" fill="#94a3b8" font-size="22" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">${esc(ts)}</text>
@@ -793,7 +897,11 @@ export default function StockInsightModal(props: {
   <text x="76" y="520" fill="#94a3b8" font-size="24" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">风险</text>
   <text x="180" y="520" fill="#cbd5e1" font-size="24" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">${esc(trim(risks, 52))}</text>
 
-  <text x="76" y="566" fill="#64748b" font-size="20" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">来源：${esc(source)} · 仅供参考，不构成投资建议</text>
+  <text x="76" y="560" fill="#94a3b8" font-size="22" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">技术</text>
+  <text x="180" y="560" fill="#cbd5e1" font-size="21" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">${esc(trim(technicalBrief, 58))}</text>
+  <text x="76" y="590" fill="#94a3b8" font-size="22" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">关键位</text>
+  <text x="180" y="590" fill="#cbd5e1" font-size="21" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">${esc(trim(levelsBrief, 58))}</text>
+  <text x="76" y="618" fill="#64748b" font-size="18" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Microsoft YaHei,sans-serif">来源：${esc(source)} · 仅供参考，不构成投资建议</text>
 </svg>`
 
       const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
@@ -1376,6 +1484,7 @@ export default function StockInsightModal(props: {
                       <SelectItem value="12">近12小时</SelectItem>
                       <SelectItem value="24">近24小时</SelectItem>
                       <SelectItem value="48">近48小时</SelectItem>
+                      <SelectItem value="168">近7天</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1404,15 +1513,19 @@ export default function StockInsightModal(props: {
             {tab === 'announcements' && (
               <div className="space-y-3">
                 <div className="flex items-center justify-end">
-                  <Select value={newsHours} onValueChange={setNewsHours}>
+                  <Select value={announcementHours} onValueChange={setAnnouncementHours}>
                     <SelectTrigger className="h-8 w-[110px] text-[12px]">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="168">近7天</SelectItem>
+                      <SelectItem value="336">近14天</SelectItem>
+                      <SelectItem value="720">近30天</SelectItem>
+                      <SelectItem value="2160">近90天</SelectItem>
+                      <SelectItem value="4320">近180天</SelectItem>
                       <SelectItem value="24">近24小时</SelectItem>
                       <SelectItem value="48">近48小时</SelectItem>
                       <SelectItem value="72">近72小时</SelectItem>
-                      <SelectItem value="168">近7天</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
