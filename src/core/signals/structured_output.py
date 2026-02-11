@@ -33,6 +33,13 @@ def try_parse_action_json(text: str) -> dict | None:
                 raw = "\n".join(lines[1:-1]).strip()
         else:
             raw = raw.strip("`").strip()
+    # Allow "json" prefix line without code fences.
+    # Example:
+    # json
+    # {"action":"buy", ...}
+    lines = raw.splitlines()
+    if lines and lines[0].strip().lower() == "json":
+        raw = "\n".join(lines[1:]).strip()
     try:
         obj = json.loads(raw)
     except Exception:
