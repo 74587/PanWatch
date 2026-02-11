@@ -886,9 +886,11 @@ export default function StocksPage() {
     if (autoRefresh) {
       refreshQuotes()
       refreshKlines()
+      loadPoolSuggestions()
       refreshTimerRef.current = setInterval(() => {
         refreshQuotes()
         refreshKlines()
+        loadPoolSuggestions()
       }, refreshInterval * 1000)
     } else {
       // Clear interval when disabled
