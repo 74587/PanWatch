@@ -131,7 +131,7 @@ function App() {
 
   return (
     <RequireAuth>
-    <div className="min-h-screen pb-16 md:pb-0 relative overflow-x-hidden bg-background">
+    <div className="min-h-screen pb-16 md:pb-0 relative overflow-x-clip bg-background">
       <AmbientBackground />
       {/* Desktop Floating Nav */}
       <div className="sticky top-0 z-50 px-4 md:px-6 pt-3 md:pt-4 pb-2 hidden md:block">
