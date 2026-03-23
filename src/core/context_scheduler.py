@@ -1,4 +1,4 @@
-"""上下文维护调度器：后验评估 + 过期数据清理。"""
+"""上下文维护调度器：后验评估 + 过期数据清理 + 机会自动刷新。"""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from src.core.prediction_outcome import evaluate_pending_prediction_outcomes
 from src.core.strategy_engine import (
     evaluate_strategy_outcomes,
     rebalance_strategy_weights,
+    refresh_strategy_signals,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class ContextMaintenanceScheduler:
         self.outcome_retention_days = max(60, int(outcome_retention_days))
         self._evaluating = False
         self._cleaning = False
+        self._refreshing = False
 
     async def _evaluate_job(self):
         if self._evaluating:
@@ -148,6 +150,42 @@ class ContextMaintenanceScheduler:
             "strategy_rebalance": strategy_rebalance_stats,
         }
 
+    async def _refresh_opportunities_job(self):
+        """定时刷新机会池（候选 + 策略信号）。"""
+        if self._refreshing:
+            logger.info("[上下文维护] 上一轮机会刷新仍在执行，跳过本轮")
+            return
+        self._refreshing = True
+        try:
+            result = await asyncio.to_thread(
+                refresh_strategy_signals,
+                rebuild_candidates=True,
+                max_inputs=500,
+                market_scan_limit=80,
+                max_kline_symbols=60,
+                limit_candidates=2000,
+            )
+            logger.info(
+                "[上下文维护] 机会自动刷新完成: snapshot_date=%s count=%s",
+                result.get("snapshot_date", ""),
+                result.get("count", 0),
+            )
+        except Exception as e:
+            logger.exception(f"[上下文维护] 机会自动刷新异常: {e}")
+        finally:
+            self._refreshing = False
+
+    async def refresh_opportunities_once(self) -> dict:
+        """手动触发一次机会刷新。"""
+        return await asyncio.to_thread(
+            refresh_strategy_signals,
+            rebuild_candidates=True,
+            max_inputs=500,
+            market_scan_limit=80,
+            max_kline_symbols=60,
+            limit_candidates=2000,
+        )
+
     async def cleanup_once(self) -> dict:
         return await asyncio.to_thread(
             cleanup_context_data,
@@ -177,6 +215,18 @@ class ContextMaintenanceScheduler:
             coalesce=True,
             max_instances=1,
         )
+        # 机会自动刷新（北京时间 09:15 / 13:30 / 22:00）
+        for job_hour, job_minute in ((1, 15), (5, 30), (14, 0)):
+            self.scheduler.add_job(
+                self._refresh_opportunities_job,
+                "cron",
+                hour=job_hour,
+                minute=job_minute,
+                id=f"context_maintenance_refresh_opportunities_{job_hour:02d}{job_minute:02d}",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
         # Run a bootstrap evaluation shortly after startup to warm up outcome stats.
         self.scheduler.add_job(
             self._evaluate_job,
@@ -189,7 +239,7 @@ class ContextMaintenanceScheduler:
         )
         self.scheduler.start()
         logger.info(
-            "上下文维护调度器已启动（后验评估间隔 %sh，启动补跑 +15s，快照保留 %s 天，后验保留 %s 天）",
+            "上下文维护调度器已启动（后验评估间隔 %sh，启动补跑 +15s，快照保留 %s 天，后验保留 %s 天，机会自动刷新 01:15/05:30/14:00 UTC）",
             self.eval_interval_hours,
             self.snapshot_retention_days,
             self.outcome_retention_days,
