@@ -3,7 +3,7 @@ import logging
 import os
 import shutil
 from datetime import datetime
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from src.web.migrations import has_pending_migrations, run_versioned_migrations
@@ -13,7 +13,29 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "panwatch.db")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-engine = create_engine(f"sqlite:///{DB_PATH}", echo=False)
+engine = create_engine(
+    f"sqlite:///{DB_PATH}",
+    echo=False,
+    connect_args={
+        "timeout": 30,
+        "check_same_thread": False,
+    },
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+)
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragma(dbapi_conn, connection_record):
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 SessionLocal = sessionmaker(bind=engine)
 
 
