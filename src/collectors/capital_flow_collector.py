@@ -1,5 +1,6 @@
 """资金流向采集器 - 基于东方财富 API"""
 import logging
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -9,8 +10,8 @@ from src.models.market import MarketCode
 
 logger = logging.getLogger(__name__)
 
-# 东方财富资金流向 API（使用 delay 版本更稳定）
-EASTMONEY_FLOW_URL = "https://push2delay.eastmoney.com/api/qt/stock/get"
+# 东方财富资金流向 API
+EASTMONEY_FLOW_URL = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
 
 
 @dataclass
@@ -40,6 +41,15 @@ def _get_eastmoney_secid(symbol: str, market: MarketCode) -> str:
     prefix = "1" if is_cn_sh(symbol) else "0"
     return f"{prefix}.{symbol}"
 
+def _safe_float(value):
+    """将字符串或数字安全转换为 float，无效值返回 0.0"""
+    if value is None or value == '' or value == '-':
+        return 0.0
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
 
 class CapitalFlowCollector:
     """资金流向采集器"""
@@ -52,9 +62,13 @@ class CapitalFlowCollector:
         secid = _get_eastmoney_secid(symbol, self.market)
 
         params = {
+            "lmt": "0",
+            "klt": "101",
             "secid": secid,
-            "fields": "f57,f58,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f64,f65,f70,f71,f76,f77,f82,f83,f164,f166,f168,f170,f172,f252,f253,f254,f255,f256",
-            "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+            "fields1": "f1,f2,f3,f7",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
+            "ut": "b2884a393a59ad64002292a3e90d46a5",
+            "_": int(time.time() * 1000),
         }
 
         headers = {
@@ -68,22 +82,58 @@ class CapitalFlowCollector:
                 data = resp.json()
 
             if data.get("data") is None:
-                logger.warning(f"获取 {symbol} 资金流向失败: 无数据")
+                logger.warning(f"没有 data 数据 获取 {symbol} 资金流向失败: 无数据")
                 return None
 
             d = data["data"]
+            klines = d.get('klines')
+            if not klines:
+                logger.warning(f"没有 klines 数据 获取 {symbol} 资金流向失败: 无数据")
+                return None
 
-            return CapitalFlow(
-                symbol=str(d.get("f57", symbol)),
-                name=str(d.get("f58", "")),
-                main_net_inflow=float(d.get("f62", 0)),        # 主力净流入
-                main_net_inflow_pct=float(d.get("f184", 0)),   # 主力净流入占比
-                super_net_inflow=float(d.get("f66", 0)),       # 超大单净流入
-                big_net_inflow=float(d.get("f72", 0)),         # 大单净流入
-                mid_net_inflow=float(d.get("f78", 0)),         # 中单净流入
-                small_net_inflow=float(d.get("f84", 0)),       # 小单净流入
-                main_net_5d=float(d.get("f164", 0)) if d.get("f164") else None,
+            # 1. 获取最新一条（最后一条）数据
+            last_line = klines[-1]
+            # 字段索引（从0开始）：
+            # 0:日期, 1:主力净额, 2:小单净额, 3:中单净额, 4:大单净额, 5:超大单净额,
+            # 6:主力占比, 7:小单占比, 8:中单占比, 9:大单占比, 10:超大单占比,
+            # 11:收盘价, 12:涨跌幅, 13:成交量, 14:成交额
+            parts = last_line.split(',')
+            if len(parts) < 13:
+                logger.warning(f"klines 字段不足，实际长度 {len(parts)} 获取 {symbol} 资金流向失败: 无数据")
+                return None
+
+            # 2. 计算5日主力净流入（最后5条的主力净额之和）
+            # 注意：klines 顺序是从旧到新，最后5条即 klines[-5:]
+            last_five = klines[-5:] if len(klines) >= 5 else klines  # 不足5条则用全部
+            main_net_5d = 0.0
+            for line in last_five:
+                line_parts = line.split(',')
+                if len(line_parts) >= 2:
+                    main_net_5d += _safe_float(line_parts[1])
+
+            capital_flow = CapitalFlow(
+                symbol=str(d["code"]),
+                name=str(d["name"]),
+                main_net_inflow=_safe_float(parts[1]),  # 主力净流入
+                main_net_inflow_pct=_safe_float(parts[6]),  # 主力净流入占比
+                super_net_inflow=_safe_float(parts[5]),  # 超大单净流入
+                big_net_inflow=_safe_float(parts[4]),  # 大单净流入
+                mid_net_inflow=_safe_float(parts[3]),  # 中单净流入
+                small_net_inflow=_safe_float(parts[2]),  # 小单净流入
+                main_net_5d=main_net_5d,  # 5日主力净流入
             )
+
+            # print(f"代码: {capital_flow.symbol}")
+            # print(f"名称: {capital_flow.name}")
+            # print(f"主力净流入: {capital_flow.main_net_inflow:,.2f} 元")
+            # print(f"主力净流入占比: {capital_flow.main_net_inflow_pct}%")
+            # print(f"超大单净流入: {capital_flow.super_net_inflow:,.2f} 元")
+            # print(f"大单净流入: {capital_flow.big_net_inflow:,.2f} 元")
+            # print(f"中单净流入: {capital_flow.mid_net_inflow:,.2f} 元")
+            # print(f"小单净流入: {capital_flow.small_net_inflow:,.2f} 元")
+            # print(f"5日主力净流入: {capital_flow.main_net_5d:,.2f} 元")
+
+            return capital_flow
 
         except Exception as e:
             logger.error(f"获取 {symbol} 资金流向失败: {e}")
