@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import { Copy, Download, ExternalLink, RefreshCw, Share2, Sparkles } from 'lucide-react'
-import { insightApi, stocksApi, tradingAgentsApi, type DeepAnalysisResult } from '@panwatch/api'
+import {
+  insightApi,
+  stocksApi,
+  tradingAgentsApi,
+  type DeepAnalysisResult,
+  type HistoryComparisonResponse,
+} from '@panwatch/api'
 import { getMarketBadge } from '@panwatch/biz-ui'
 import { useLocalStorage } from '@/lib/utils'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@panwatch/base-ui/components/ui/dialog'
@@ -365,6 +371,8 @@ export default function StockInsightModal(props: {
   const [deepLoaded, setDeepLoaded] = useState(false)
   const [deepShowAnalyst, setDeepShowAnalyst] = useState(false)
   const [deepShowDebate, setDeepShowDebate] = useState(false)
+  const [deepHistory, setDeepHistory] = useState<HistoryComparisonResponse | null>(null)
+  const [deepHistoryLoading, setDeepHistoryLoading] = useState(false)
   const [klineInterval] = useState<'1d' | '1w' | '1m'>('1d')
   const [alerting, setAlerting] = useState(false)
   const [watchingStock, setWatchingStock] = useState<StockItem | null>(null)
@@ -698,16 +706,23 @@ export default function StockInsightModal(props: {
   const loadDeepResult = useCallback(async () => {
     if (!symbol) return
     setDeepLoading(true)
+    setDeepHistoryLoading(true)
     try {
-      const res = await tradingAgentsApi.getLatestForStock(symbol)
-      setDeepResult(res)
+      const [latest, history] = await Promise.allSettled([
+        tradingAgentsApi.getLatestForStock(symbol),
+        tradingAgentsApi.getHistoryComparison(symbol, market, 90),
+      ])
+      setDeepResult(latest.status === 'fulfilled' ? latest.value : null)
+      setDeepHistory(history.status === 'fulfilled' ? history.value : null)
     } catch {
       setDeepResult(null)
+      setDeepHistory(null)
     } finally {
       setDeepLoaded(true)
       setDeepLoading(false)
+      setDeepHistoryLoading(false)
     }
-  }, [symbol])
+  }, [symbol, market])
 
   useEffect(() => {
     if (!props.open || !symbol) return
@@ -720,6 +735,7 @@ export default function StockInsightModal(props: {
     setWatchingStock(null)
     setDeepResult(null)
     setDeepLoaded(false)
+    setDeepHistory(null)
     loadCore()
   }, [props.open, symbol, market, loadCore])
 
@@ -1721,6 +1737,8 @@ export default function StockInsightModal(props: {
                 loading={deepLoading}
                 loaded={deepLoaded}
                 result={deepResult}
+                history={deepHistory}
+                historyLoading={deepHistoryLoading}
                 showAnalyst={deepShowAnalyst}
                 setShowAnalyst={setDeepShowAnalyst}
                 showDebate={deepShowDebate}
@@ -1872,6 +1890,8 @@ function DeepAnalysisSection({
   loading,
   loaded,
   result,
+  history,
+  historyLoading,
   showAnalyst,
   setShowAnalyst,
   showDebate,
@@ -1881,6 +1901,8 @@ function DeepAnalysisSection({
   loading: boolean
   loaded: boolean
   result: DeepAnalysisResult | null
+  history: HistoryComparisonResponse | null
+  historyLoading: boolean
   showAnalyst: boolean
   setShowAnalyst: (v: boolean) => void
   showDebate: boolean
@@ -1895,7 +1917,7 @@ function DeepAnalysisSection({
       </div>
     )
   }
-  if (!result) {
+  if (!result && !history?.items?.length) {
     return (
       <div className="card p-6 text-center text-[12px] text-muted-foreground space-y-2">
         <div>暂无深度分析报告</div>
@@ -1906,7 +1928,7 @@ function DeepAnalysisSection({
     )
   }
 
-  const rawData = (result.raw_data || {}) as Partial<DeepAnalysisResult['raw_data']>
+  const rawData = (result?.raw_data || {}) as Partial<DeepAnalysisResult['raw_data']>
   const sug = rawData.suggestion
   const reports = rawData.analyst_reports || { market: '', social: '', news: '', fundamentals: '' }
   const debate = rawData.debate_history
@@ -1916,10 +1938,10 @@ function DeepAnalysisSection({
     <div className="space-y-3 text-[13px]">
       <div className="flex items-center justify-between gap-2">
         <div className="text-[11px] text-muted-foreground">
-          TradingAgents 深度{result.timestamp ? ` · ${result.timestamp.slice(0, 16).replace('T', ' ')}` : ''}
+          TradingAgents 深度{result?.timestamp ? ` · ${result.timestamp.slice(0, 16).replace('T', ' ')}` : ''}
         </div>
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={onRefresh} disabled={loading}>
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={onRefresh} disabled={loading || historyLoading}>
+          <RefreshCw className={`w-3.5 h-3.5 ${loading || historyLoading ? 'animate-spin' : ''}`} />
         </Button>
       </div>
 
@@ -1942,7 +1964,9 @@ function DeepAnalysisSection({
         </div>
       )}
 
-      {result.content && (
+      <DeepHistoryComparison history={history} loading={historyLoading} />
+
+      {result?.content && (
         <div className="rounded-lg border border-border/50 p-4">
           <div className="prose prose-sm dark:prose-invert max-w-none break-words">
             <ReactMarkdown>{result.content}</ReactMarkdown>
@@ -1950,31 +1974,33 @@ function DeepAnalysisSection({
         </div>
       )}
 
-      <div>
-        <button
-          className="text-[12px] text-muted-foreground hover:text-foreground flex items-center gap-1"
-          onClick={() => setShowAnalyst(!showAnalyst)}
-        >
-          {showAnalyst ? '▼' : '▶'} 4 位分析师报告
-        </button>
-        {showAnalyst && (
-          <div className="space-y-3 mt-2 pl-3 border-l-2 border-border/40">
-            {(['market', 'social', 'news', 'fundamentals'] as const).map((k) => {
-              const text = (reports as unknown as Record<string, string>)[k] || ''
-              if (!text) return null
-              return (
-                <details key={k} open className="text-[12px]">
-                  <summary className="font-medium cursor-pointer">{DEEP_STAGE_LABEL[k] || k}</summary>
-                  <div className="mt-2 text-[11px] text-foreground/80 whitespace-pre-wrap">
-                    {text.slice(0, 1500)}
-                    {text.length > 1500 && '... (截断)'}
-                  </div>
-                </details>
-              )
-            })}
-          </div>
-        )}
-      </div>
+      {result && (
+        <div>
+          <button
+            className="text-[12px] text-muted-foreground hover:text-foreground flex items-center gap-1"
+            onClick={() => setShowAnalyst(!showAnalyst)}
+          >
+            {showAnalyst ? '▼' : '▶'} 4 位分析师报告
+          </button>
+          {showAnalyst && (
+            <div className="space-y-3 mt-2 pl-3 border-l-2 border-border/40">
+              {(['market', 'social', 'news', 'fundamentals'] as const).map((k) => {
+                const text = (reports as unknown as Record<string, string>)[k] || ''
+                if (!text) return null
+                return (
+                  <details key={k} open className="text-[12px]">
+                    <summary className="font-medium cursor-pointer">{DEEP_STAGE_LABEL[k] || k}</summary>
+                    <div className="mt-2 text-[11px] text-foreground/80 whitespace-pre-wrap">
+                      {text.slice(0, 1500)}
+                      {text.length > 1500 && '... (截断)'}
+                    </div>
+                  </details>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {debate && debate.history && (
         <div>
@@ -2000,6 +2026,91 @@ function DeepAnalysisSection({
 
       <div className="text-[10px] text-muted-foreground/70 italic border-t border-border/30 pt-2">
         本分析由 AI 多 Agent 框架生成,仅供学习研究参考,不构成任何投资建议。
+      </div>
+    </div>
+  )
+}
+
+function DeepHistoryComparison({
+  history,
+  loading,
+}: {
+  history: HistoryComparisonResponse | null
+  loading: boolean
+}) {
+  if (loading && !history) {
+    return (
+      <div className="rounded-lg border border-border/40 p-3 text-[11px] text-muted-foreground text-center">
+        历史对比加载中...
+      </div>
+    )
+  }
+  if (!history || history.items.length === 0) return null
+
+  const stats = history.stats
+  const fmtPct = (v: number | null): string => (v == null ? '-' : `${(v * 100).toFixed(0)}%`)
+  const fmtRet = (v: number | null): string => (v == null ? '-' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
+  const retCls = (v: number | null): string =>
+    v == null ? 'text-muted-foreground' : v > 0 ? 'text-emerald-600 dark:text-emerald-400' : v < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-muted-foreground'
+
+  return (
+    <div className="rounded-lg border border-border/50 p-3 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-[12px] font-medium">历史决策 vs 实际涨跌</div>
+        <div className="text-[10px] text-muted-foreground">仅基于满 20 个交易日的决策统计</div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+        <div className="rounded bg-accent/30 px-2 py-1.5">
+          <div className="text-muted-foreground">总命中率</div>
+          <div className="font-semibold">{fmtPct(stats.overall_hit_rate)}</div>
+        </div>
+        <div className="rounded bg-accent/30 px-2 py-1.5">
+          <div className="text-muted-foreground">买入 ({stats.buy_count})</div>
+          <div className="font-semibold text-emerald-600 dark:text-emerald-400">{fmtPct(stats.buy_hit_rate)}</div>
+        </div>
+        <div className="rounded bg-accent/30 px-2 py-1.5">
+          <div className="text-muted-foreground">卖出 ({stats.sell_count})</div>
+          <div className="font-semibold text-rose-600 dark:text-rose-400">{fmtPct(stats.sell_hit_rate)}</div>
+        </div>
+        <div className="rounded bg-accent/30 px-2 py-1.5">
+          <div className="text-muted-foreground">平均 20 日收益</div>
+          <div className={`font-semibold ${retCls(stats.avg_return_20d_pct)}`}>{fmtRet(stats.avg_return_20d_pct)}</div>
+        </div>
+      </div>
+      <div className="overflow-x-auto -mx-1 mt-2">
+        <table className="w-full text-[11px]">
+          <thead className="text-muted-foreground">
+            <tr className="border-b border-border/40">
+              <th className="text-left px-1 py-1 font-normal">日期</th>
+              <th className="text-left px-1 py-1 font-normal">决策</th>
+              <th className="text-right px-1 py-1 font-normal">分析价</th>
+              <th className="text-right px-1 py-1 font-normal">1日</th>
+              <th className="text-right px-1 py-1 font-normal">5日</th>
+              <th className="text-right px-1 py-1 font-normal">20日</th>
+              <th className="text-center px-1 py-1 font-normal">命中</th>
+            </tr>
+          </thead>
+          <tbody>
+            {history.items.map((item, i) => (
+              <tr key={`${item.analysis_date}-${i}`} className="border-b border-border/20 hover:bg-accent/10">
+                <td className="px-1 py-1 text-muted-foreground whitespace-nowrap">{item.analysis_date}</td>
+                <td className="px-1 py-1">
+                  <span className={DEEP_DECISION_COLOR[item.action] || ''}>{item.action_label}</span>
+                  {typeof item.confidence === 'number' && (
+                    <span className="text-muted-foreground text-[10px] ml-1">({item.confidence.toFixed(1)})</span>
+                  )}
+                </td>
+                <td className="px-1 py-1 text-right text-foreground/80">{item.price_at_analysis ?? '-'}</td>
+                <td className={`px-1 py-1 text-right ${retCls(item.return_1d_pct)}`}>{fmtRet(item.return_1d_pct)}</td>
+                <td className={`px-1 py-1 text-right ${retCls(item.return_5d_pct)}`}>{fmtRet(item.return_5d_pct)}</td>
+                <td className={`px-1 py-1 text-right ${retCls(item.return_20d_pct)}`}>{fmtRet(item.return_20d_pct)}</td>
+                <td className="px-1 py-1 text-center">
+                  {item.hit_20d == null ? <span className="text-muted-foreground">-</span> : item.hit_20d ? '✓' : '✗'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )

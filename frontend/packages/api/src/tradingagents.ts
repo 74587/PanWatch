@@ -100,6 +100,37 @@ export interface BudgetInfo {
   enabled: boolean
 }
 
+export interface HistoryComparisonItem {
+  trace_id: string
+  analysis_date: string
+  action: 'buy' | 'hold' | 'sell'
+  action_label: string
+  confidence: number | null
+  cost_usd: number | null
+  price_at_analysis: number | null
+  return_1d_pct: number | null
+  return_5d_pct: number | null
+  return_20d_pct: number | null
+  hit_20d: boolean | null
+}
+
+export interface HistoryComparisonStats {
+  total: number
+  buy_count: number
+  sell_count: number
+  hold_count: number
+  buy_hit_rate: number | null
+  sell_hit_rate: number | null
+  hold_hit_rate: number | null
+  overall_hit_rate: number | null
+  avg_return_20d_pct: number | null
+}
+
+export interface HistoryComparisonResponse {
+  items: HistoryComparisonItem[]
+  stats: HistoryComparisonStats
+}
+
 export const tradingAgentsApi = {
   /** 触发深度分析(异步排队)。force=true 跳过同日缓存。
    *  TradingAgents 不要求 StockAgent 绑定 — 始终带 allow_unbound=true。 */
@@ -133,6 +164,20 @@ export const tradingAgentsApi = {
   /** 拉取进度(前端轮询)。 */
   getProgress(traceId: string): Promise<ProgressResponse> {
     return fetchAPI(`/agents/runs/${encodeURIComponent(traceId)}/progress`)
+  },
+
+  /** 历史决策 vs 实际涨跌对比。 */
+  getHistoryComparison(
+    symbol: string,
+    market: string,
+    days = 90,
+  ): Promise<HistoryComparisonResponse> {
+    const qs = new URLSearchParams({
+      stock_symbol: symbol,
+      market,
+      days: String(days),
+    })
+    return fetchAPI(`/agents/tradingagents/history-comparison?${qs.toString()}`)
   },
 
   /** 拉取某只股票最近一次深度分析结果(含完整 raw_data)。 */

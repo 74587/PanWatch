@@ -485,6 +485,22 @@ def get_tradingagents_latest(
     }
 
 
+@router.get("/tradingagents/history-comparison")
+def get_tradingagents_history_comparison(
+    stock_symbol: str = Query(..., description="股票代码,如 300418"),
+    market: str = Query("CN", description="市场:CN/US/HK"),
+    days: int = Query(90, ge=7, le=365, description="回溯天数"),
+):
+    """某只股票的 TradingAgents 历史决策 vs 实际涨跌对比。
+
+    返回 items(每条决策 + 1d/5d/20d 后涨跌)+ stats(命中率/平均收益)。
+    "命中" 定义:buy→后续上涨 / sell→后续下跌 / hold→|涨跌| < 2%(横盘)。
+    """
+    from src.agents.tradingagents.history_comparison import build_history_comparison
+
+    return build_history_comparison(stock_symbol=stock_symbol, market=market, days=days)
+
+
 @router.get("/tradingagents/budget")
 def get_tradingagents_budget(db: Session = Depends(get_db)):
     """读取 TradingAgents 本月预算使用情况。
