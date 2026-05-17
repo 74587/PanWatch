@@ -107,6 +107,9 @@ export function DeepAnalysisModal({
   const [showDebate, setShowDebate] = useState(false)
   const [budget, setBudget] = useState<BudgetInfo | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // trigger 时间戳:前 60s 内允许 not_found(后端日志还没来得及写),不重置
+  const triggerStartedRef = useRef<number>(0)
+  const NOT_FOUND_GRACE_MS = 60_000
 
   // 弹窗关闭时清理 polling
   useEffect(() => {
@@ -152,6 +155,8 @@ export function DeepAnalysisModal({
         const tid = runningInfo.trace_id
         setTraceId(tid)
         setStage('running')
+        // 后端确认在跑 → grace period 已过,不再保护 not_found
+        triggerStartedRef.current = Date.now() - NOT_FOUND_GRACE_MS - 1
         tradingAgentsApi.getProgress(tid).then(resp => setProgress(resp))
         if (timerRef.current) clearInterval(timerRef.current)
         timerRef.current = setInterval(() => pollProgress(tid), POLL_INTERVAL_MS)
@@ -164,6 +169,8 @@ export function DeepAnalysisModal({
         if (localTrace) {
           setTraceId(localTrace)
           setStage('running')
+          // localStorage 恢复:给完整 grace,等后端日志到位
+          triggerStartedRef.current = Date.now()
           tradingAgentsApi.getProgress(localTrace).then(resp => setProgress(resp))
           if (timerRef.current) clearInterval(timerRef.current)
           timerRef.current = setInterval(() => pollProgress(localTrace), POLL_INTERVAL_MS)
@@ -215,9 +222,9 @@ export function DeepAnalysisModal({
           clearRunningTrace(stockSymbol)
           setError(resp.run?.error || '分析失败')
           setStage('error')
-        } else if (resp.status === 'stale' || resp.status === 'not_found') {
-          // 后端检测到僵尸 running(server 重启 / 进程死掉,5 分钟无新进度)
-          // 或 trace_id 根本不存在 → 自动重置到 idle,用户可以重新触发
+        } else if (resp.status === 'stale') {
+          // 后端检测到僵尸 running(5 分钟无新进度,server 重启 / 进程死掉)
+          // → 自动重置到 idle,用户可以重新触发
           if (timerRef.current) {
             clearInterval(timerRef.current)
             timerRef.current = null
@@ -226,6 +233,20 @@ export function DeepAnalysisModal({
           setTraceId('')
           setProgress(null)
           setStage('idle')
+        } else if (resp.status === 'not_found') {
+          // trigger 刚发出时后端可能还没写日志,前 60s 视为正常等待,
+          // 超过 grace 仍 not_found → 视作触发失败,reset 到 idle
+          const sinceTrigger = Date.now() - triggerStartedRef.current
+          if (triggerStartedRef.current > 0 && sinceTrigger > NOT_FOUND_GRACE_MS) {
+            if (timerRef.current) {
+              clearInterval(timerRef.current)
+              timerRef.current = null
+            }
+            clearRunningTrace(stockSymbol)
+            setTraceId('')
+            setProgress(null)
+            setStage('idle')
+          }
         }
       } catch (e) {
         // polling 失败不立即终止,记一次错误
@@ -239,6 +260,7 @@ export function DeepAnalysisModal({
     setStage('running')
     setError('')
     setProgress(null)
+    triggerStartedRef.current = Date.now()
     try {
       const triggerResp = await tradingAgentsApi.trigger(stockId, { force })
       const tid = triggerResp.trace_id || ''
