@@ -28,6 +28,7 @@ from src.agents.tradingagents.llm_adapter import (
 )
 from src.agents.tradingagents.portfolio_context import (
     build_portfolio_context,
+    build_stock_metadata_context,
     patch_propagator,
 )
 from src.agents.tradingagents.progress import PanWatchProgressHandler
@@ -212,12 +213,26 @@ class TradingAgentsAgent(BaseAgent):
         # 3) 进度回调
         progress_handler = PanWatchProgressHandler(trace_id, self.name)
 
-        # 4) 渲染用户持仓上下文(注入到 TA 的 past_context 通道,给 PM 看)
+        # 4) 渲染上下文(标的元信息 + 用户持仓)注入到 TA 的 past_context 通道
         current_price = (data.get("quote") or {}).get("current_price")
-        portfolio_context_text = build_portfolio_context(
+        cur_price_num = current_price if isinstance(current_price, (int, float)) else None
+        quote_data = data.get("quote") or {}
+
+        meta_context = build_stock_metadata_context(
+            stock_symbol=stock.symbol,
+            stock_name=stock.name or "",
+            market=stock.market.value,
+            current_price=cur_price_num,
+            industry=quote_data.get("industry", "") if isinstance(quote_data, dict) else "",
+        )
+        portfolio_part = build_portfolio_context(
             getattr(context, "portfolio", None),
             stock_symbol=stock.symbol,
-            current_price=current_price if isinstance(current_price, (int, float)) else None,
+            current_price=cur_price_num,
+        )
+        # 标的元信息永远放最前(即使没有持仓也注入)
+        portfolio_context_text = (
+            f"{meta_context}\n\n{portfolio_part}" if portfolio_part else meta_context
         )
 
         # 5) 同步阻塞,丢到线程池;加硬超时防卡死

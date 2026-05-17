@@ -87,9 +87,18 @@ def patch_route_to_vendor():
 
     def _patched(method_name: str, **kwargs):
         symbol = kwargs.get("symbol") or kwargs.get("ticker") or ""
+        # 全局新闻等接口不传 symbol,但当前 cache 里有 A 股标的时,
+        # 也要拦截 — 否则会拉到完全无关的全球鞋类/汽油新闻,污染个股分析。
+        if not symbol:
+            cached_stock = _PANWATCH_DATA_CACHE.get("stock")
+            cached_symbol = getattr(cached_stock, "symbol", "") if cached_stock else ""
+            if is_a_share(cached_symbol):
+                symbol = cached_symbol
         if is_a_share(symbol) and _PANWATCH_DATA_CACHE:
             try:
                 return _serve_from_panwatch(method_name, symbol, kwargs)
+            except NotImplementedError:
+                pass  # 我们没对应数据,放行到上游
             except Exception as e:
                 logger.warning(
                     f"[TA toolkit] PanWatch 数据回填失败 (symbol={symbol}, "
@@ -104,35 +113,95 @@ def patch_route_to_vendor():
         ta_interface.route_to_vendor = original
 
 
+def _stock_meta_header(symbol: str) -> str:
+    """渲染标的元信息(公司名/市场/价格),作为所有工具返回的前缀。
+
+    A 股 ticker 不在 yfinance/finnhub 数据集,LLM 不能从 ticker 反查公司名,
+    必须显式告诉它"601127 = 赛力斯",否则会瞎编(如把 601127 当中国平安)。
+    """
+    stock = _PANWATCH_DATA_CACHE.get("stock")
+    quote = _PANWATCH_DATA_CACHE.get("quote") or {}
+
+    name = ""
+    market = "CN"
+    industry = ""
+    if stock is not None:
+        name = getattr(stock, "name", "") or ""
+        market_obj = getattr(stock, "market", None)
+        market = getattr(market_obj, "value", str(market_obj or "CN"))
+    if not name and isinstance(quote, dict):
+        name = quote.get("name") or ""
+    if isinstance(quote, dict):
+        industry = quote.get("industry") or ""
+
+    market_label = {"CN": "中国 A 股", "HK": "港股", "US": "美股"}.get(market, market)
+    cur_price = _attr(quote, "current_price", "") or _attr(quote, "price", "")
+    change_pct = _attr(quote, "change_pct", "")
+
+    lines = [
+        f"[Stock Metadata] symbol={symbol}, name={name or 'N/A'}, market={market_label}",
+    ]
+    if industry:
+        lines.append(f"  Industry: {industry}")
+    if cur_price:
+        try:
+            lines.append(
+                f"  Current price: {float(cur_price):.2f}"
+                + (f" ({float(change_pct):+.2f}%)" if change_pct != "" else "")
+            )
+        except (TypeError, ValueError):
+            pass
+    lines.append(
+        "  IMPORTANT: This is an A-share / HK / cross-market ticker. DO NOT guess the company "
+        "from the ticker code alone — use the name above."
+    )
+    return "\n".join(lines)
+
+
 def _serve_from_panwatch(method_name: str, symbol: str, kwargs: dict) -> str:
     """从 _PANWATCH_DATA_CACHE 构造 TradingAgents 期望的数据格式(CSV / JSON 字符串)。
 
     上游各 vendor 方法返回类型不一,通常是 str(已格式化的 CSV/表格/JSON)。
     本函数尽量兼容常见 method_name。**未识别的 method 返回空串,触发上游默认 vendor。**
+
+    所有分支都以「标的元信息」开头,避免 LLM 在 A 股 ticker 上瞎编公司名。
     """
     method = (method_name or "").lower()
+    header = _stock_meta_header(symbol)
 
     # 1) K 线相关:get_stockstats / get_yfin_data 等
     if any(k in method for k in ("stockstats", "yfin", "ohlcv", "kline", "price")):
         klines = _PANWATCH_DATA_CACHE.get("klines") or []
         if klines:
-            return _klines_to_csv(klines)
+            return f"{header}\n\n{_klines_to_csv(klines)}"
+        return f"{header}\n\n[No kline data available from PanWatch for {symbol}]"
 
     # 2) 公告/事件:get_finnhub_news / get_news / get_events
     if any(k in method for k in ("news", "event", "announce")):
         events = _PANWATCH_DATA_CACHE.get("events") or []
         if events:
-            return _events_to_text(events, limit=20)
+            return f"{header}\n\n{_events_to_text(events, limit=20)}"
+        return (
+            f"{header}\n\n[No company-specific news/events available for {symbol}. "
+            "DO NOT pull unrelated global news as a substitute — focus the analysis "
+            "on the metadata above and other tool outputs.]"
+        )
 
     # 3) 资金流
     if any(k in method for k in ("flow", "capital", "fund")):
         flow = _PANWATCH_DATA_CACHE.get("capital_flow")
         if flow:
-            return _flow_to_text(flow)
+            return f"{header}\n\n{_flow_to_text(flow)}"
+        return f"{header}\n\n[No capital flow data available for {symbol}]"
 
-    # 4) 基本面 / 财务:暂不实现(PanWatch 没采集)。返回 fallback 提示
+    # 4) 基本面 / 财务:PanWatch 未采集完整财报,但至少给出公司名,避免 LLM 瞎猜
     if "fundamental" in method or "financial" in method or "income" in method:
-        return f"[基本面数据暂未接入 PanWatch,symbol={symbol}]"
+        return (
+            f"{header}\n\n"
+            f"[Detailed financial statements not available via PanWatch. "
+            f"Base your fundamental view on the company name / industry / "
+            f"price action above, NOT on assumptions from the ticker code.]"
+        )
 
     # 未识别:让上游走默认 vendor
     raise NotImplementedError(f"no panwatch backing for {method_name}")
