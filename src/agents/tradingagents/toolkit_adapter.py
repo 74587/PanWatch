@@ -85,15 +85,33 @@ def patch_route_to_vendor():
 
     original = ta_interface.route_to_vendor
 
-    def _patched(method_name: str, **kwargs):
-        symbol = kwargs.get("symbol") or kwargs.get("ticker") or ""
-        # 全局新闻等接口不传 symbol,但当前 cache 里有 A 股标的时,
-        # 也要拦截 — 否则会拉到完全无关的全球鞋类/汽油新闻,污染个股分析。
+    def _patched(method_name: str, *args, **kwargs):
+        """与上游 route_to_vendor(method, *args, **kwargs) 完全同签名。
+
+        上游所有 toolkit 都用 positional 传 ticker:
+          route_to_vendor("get_fundamentals", ticker, curr_date)
+          route_to_vendor("get_news", ticker, start_date, end_date)
+          route_to_vendor("get_stock_data", symbol, ...)
+          route_to_vendor("get_global_news", curr_date, look_back_days, limit)  # 无 symbol
+        """
+        symbol = ""
+        # 大多数 method 第一个 positional 就是 ticker/symbol(get_global_news 等例外)
+        if args and isinstance(args[0], str) and not args[0][:4].isdigit():
+            # 第一个参数是 ticker(601127)而非日期(2026-...)
+            if not (len(args[0]) >= 8 and args[0][4] in "-/"):
+                symbol = args[0]
+        # 兜底:再看 kwargs
+        if not symbol:
+            symbol = kwargs.get("symbol") or kwargs.get("ticker") or ""
+
+        # 没拿到 symbol 时(如 get_global_news),用 cache 里的标的兜底,
+        # 拦截"全局新闻"类调用避免拉到无关 Yahoo 鞋类/汽油新闻。
         if not symbol:
             cached_stock = _PANWATCH_DATA_CACHE.get("stock")
             cached_symbol = getattr(cached_stock, "symbol", "") if cached_stock else ""
             if is_a_share(cached_symbol):
                 symbol = cached_symbol
+
         if is_a_share(symbol) and _PANWATCH_DATA_CACHE:
             try:
                 return _serve_from_panwatch(method_name, symbol, kwargs)
@@ -104,7 +122,7 @@ def patch_route_to_vendor():
                     f"[TA toolkit] PanWatch 数据回填失败 (symbol={symbol}, "
                     f"method={method_name}): {e},退回上游 vendor"
                 )
-        return original(method_name, **kwargs)
+        return original(method_name, *args, **kwargs)
 
     ta_interface.route_to_vendor = _patched
     try:
