@@ -606,7 +606,18 @@ def get_run_progress(trace_id: str, db: Session = Depends(get_db)):
             "notify_sent": run.notify_sent,
         }
     elif log_dicts:
-        status = "running"
+        # 检测"僵尸 running":server 重启 / 工作线程死掉时,日志还在但任务已不在跑。
+        # 最后一条进度日志距今 > STALE_THRESHOLD 视为中断,前端可据此 reset 回 idle。
+        STALE_THRESHOLD_SEC = 300  # 5 分钟
+        last_log = logs[-1]  # logs 已 order_by id.asc(),末尾是最新
+        last_ts = last_log.timestamp
+        if last_ts is not None:
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=timezone.utc)
+            idle_sec = (datetime.now(timezone.utc) - last_ts).total_seconds()
+            status = "stale" if idle_sec > STALE_THRESHOLD_SEC else "running"
+        else:
+            status = "running"
     else:
         status = "not_found"
 

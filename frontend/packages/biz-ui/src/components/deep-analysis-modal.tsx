@@ -215,6 +215,17 @@ export function DeepAnalysisModal({
           clearRunningTrace(stockSymbol)
           setError(resp.run?.error || '分析失败')
           setStage('error')
+        } else if (resp.status === 'stale' || resp.status === 'not_found') {
+          // 后端检测到僵尸 running(server 重启 / 进程死掉,5 分钟无新进度)
+          // 或 trace_id 根本不存在 → 自动重置到 idle,用户可以重新触发
+          if (timerRef.current) {
+            clearInterval(timerRef.current)
+            timerRef.current = null
+          }
+          clearRunningTrace(stockSymbol)
+          setTraceId('')
+          setProgress(null)
+          setStage('idle')
         }
       } catch (e) {
         // polling 失败不立即终止,记一次错误

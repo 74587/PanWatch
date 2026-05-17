@@ -67,7 +67,7 @@ export interface ProgressStage {
 
 export interface ProgressResponse {
   trace_id: string
-  status: 'not_found' | 'running' | 'success' | 'failed'
+  status: 'not_found' | 'running' | 'success' | 'failed' | 'stale'
   current_stage?: string | null
   completed_stages: string[]
   started_at?: string | null
